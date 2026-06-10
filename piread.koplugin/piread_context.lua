@@ -16,7 +16,7 @@ Does NOT require network once X-Ray is cached.
 local ButtonDialog  = require("ui/widget/buttondialog")
 local InfoMessage   = require("ui/widget/infomessage")
 local Menu          = require("ui/widget/menu")
-local Screen        = require("device/screen")
+local Screen = require("device").screen
 local TextViewer    = require("ui/widget/textviewer")
 local UIManager     = require("ui/uimanager")
 local logger        = require("logger")
