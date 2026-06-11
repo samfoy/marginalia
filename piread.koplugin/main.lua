@@ -414,7 +414,43 @@ function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mod
     end)
 end
 
-function PiRead:chatBridge(question, book_title, book_author, reading_pct)
+function PiRead:showChatDialog()
+    local s = self:loadSettings()
+    if not s.enabled then return end
+
+    local props  = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
+    local book_title  = props.title   or ""
+    local book_author = props.authors or ""
+    local reading_pct = self:currentReadingPct()
+
+    local dialog
+    dialog = InputDialog:new{
+        title      = _("Ask Pi"),
+        input      = "",
+        input_hint = _("What's happening? Who is this? What did I miss?"),
+        input_type = "string",
+        buttons = {{
+            {
+                text = _("Cancel"),
+                id   = "close",
+                callback = function() UIManager:close(dialog) end,
+            },
+            {
+                text             = _("Ask"),
+                is_enter_default = true,
+                callback         = function()
+                    local question = dialog:getInputText()
+                    if not question or question:match("^%s*$") then return end
+                    UIManager:close(dialog)
+                    self:chatBridge(question, book_title, book_author, reading_pct)
+                end,
+            },
+        }},
+    }
+    UIManager:show(dialog)
+end
+
+
     local close_loading = self:showLoadingAnim(_("Asking Pi"))
     local page_text = self:getCurrentPageText(2500)
 
