@@ -7,6 +7,7 @@ Routes:
   GET  /index                 X-Ray cache index (for pi chat queries)
   GET  /xray/status/<job_id>  poll a background X-Ray generation job
   POST /ask                   conversational query (explain/translate/summarize)
+  POST /note                  save highlighted passage + context to Obsidian vault
   POST /xray/init             find book in Calibre, generate X-Ray, cache it
   POST /xray/progress         update reading position for a cached book
 
@@ -17,11 +18,13 @@ Config via environment variables (all optional):
   PIREAD_MODEL_ID     Model for /ask queries           (default: us.anthropic.claude-sonnet-4-6)
   PIREAD_TOKEN        Shared secret (empty = no auth)  (default: "")
   PIREAD_MAX_TOKENS   Max tokens for /ask responses    (default: 600)
+  PIREAD_VAULT        Obsidian vault root              (default: ~/Documents/Sam)
 """
 
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -49,6 +52,8 @@ REGION     = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
 MODEL_ID   = os.environ.get("PIREAD_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 TOKEN      = os.environ.get("PIREAD_TOKEN", "")
 MAX_TOKENS = int(os.environ.get("PIREAD_MAX_TOKENS", 600))
+VAULT_ROOT = os.path.expanduser(os.environ.get("PIREAD_VAULT", "~/Documents/Sam"))
+BOOKS_DIR  = os.path.join(VAULT_ROOT, "Notes", "Books")
 
 # ── System prompts per mode ───────────────────────────────────────────────────
 
@@ -134,6 +139,65 @@ def ask_claude(text: str, context: str | None, book_title: str | None,
 
 
 # ── X-Ray generation job registry ─────────────────────────────────────────────
+# ── Obsidian vault note saving ─────────────────────────────────────────────────
+
+def _save_vault_note(
+    highlight: str, context: str,
+    book_title: str, book_author: str, reading_pct: float,
+) -> str:
+    """
+    Append a highlight + optional context to the book's Obsidian vault note.
+    File: BOOKS_DIR/<Author> - <Title>.md
+    Creates the file with frontmatter if it doesn't exist.
+    Returns the absolute path written.
+    """
+    from datetime import datetime
+
+    os.makedirs(BOOKS_DIR, exist_ok=True)
+
+    # Sanitise filename
+    def safe(s: str) -> str:
+        return re.sub(r'[\\/:*?"<>|]', '', s).strip()
+
+    filename = (f"{safe(book_author)} - {safe(book_title)}.md"
+                if book_author else f"{safe(book_title)}.md")
+    filepath = os.path.join(BOOKS_DIR, filename)
+
+    # Build bullet
+    date_str  = datetime.now().strftime("%Y-%m-%d")
+    pct_tag   = f" ({int(reading_pct)}%)" if reading_pct else ""
+    lines     = [f"- {date_str}{pct_tag}:", f"  > {highlight}"]
+    if context:
+        lines += ["", f"  {context}"]
+    bullet = "\n".join(lines)
+
+    # Read or create
+    if os.path.exists(filepath):
+        with open(filepath, encoding="utf-8") as f:
+            content = f.read()
+    else:
+        content = (
+            f"---\ntitle: \"{book_title}\"\nauthor: \"{book_author}\"\n"
+            f"tags:\n  - book\n---\n\n# {book_title}\n\n"
+            f"**Author:** {book_author}\n\n## Notes\n\n"
+        )
+        logging.info("vault note: created %s", filepath)
+
+    # Append under ## Notes (before next ## if any, else EOF)
+    if "## Notes" in content:
+        notes_idx = content.find("## Notes") + 8
+        m = re.search(r"\n## ", content[notes_idx:])
+        at = (notes_idx + m.start()) if m else len(content)
+        content = content[:at].rstrip() + "\n\n" + bullet + "\n" + content[at:]
+    else:
+        content = content.rstrip() + "\n\n## Notes\n\n" + bullet + "\n"
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+    logging.info("vault note: saved to %s", filepath)
+    return filepath
+
+
 # job_id → {status, progress, record, error}
 _xray_jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
@@ -342,6 +406,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/chat":
             self._handle_chat()
             return
+        if self.path == "/note":
+            self._handle_note()
+            return
         if self.path == "/v1/chat/completions":
             self._handle_openai_compat()
             return
@@ -545,6 +612,38 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             logging.exception("OpenAI-compat error")
             self._send_json(500, {"error": {"message": str(exc), "type": "server_error"}})
+
+    # ── /note — save highlight + context to Obsidian vault ────────────────
+    def _handle_note(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON"); return
+
+        highlight  = (req.get("highlight") or "").strip()
+        context    = (req.get("context") or "").strip()
+        book_title = (req.get("book_title") or "").strip()
+        book_author = (req.get("book_author") or "").strip()
+        reading_pct = req.get("reading_pct") or 0
+
+        if not highlight:
+            self.send_error(400, "Missing highlight"); return
+        if not book_title:
+            self.send_error(400, "Missing book_title"); return
+
+        try:
+            path = _save_vault_note(
+                highlight=highlight,
+                context=context,
+                book_title=book_title,
+                book_author=book_author,
+                reading_pct=reading_pct,
+            )
+            self._send_json(200, {"ok": True, "path": path})
+        except Exception as exc:
+            logging.exception("Note save error")
+            self._send_json(500, {"ok": False, "error": str(exc)})
 
     # ── /xray/progress ────────────────────────────────────────────────────────
     def _handle_xray_progress(self):

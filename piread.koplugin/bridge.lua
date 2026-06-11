@@ -231,4 +231,15 @@ function Bridge:chatAsync(params, on_done, on_error)
     return Async.post(self:url("/chat"), payload, on_done, on_error)
 end
 
+--- Async save-to-vault — POST /note. Calls on_done(resp_table) or on_error(err).
+function Bridge:noteAsync(params, on_done, on_error)
+    return Async.post(self:url("/note"), {
+        highlight   = params.highlight,
+        context     = params.context,
+        book_title  = params.book_title,
+        book_author = params.book_author,
+        reading_pct = params.reading_pct,
+    }, on_done, on_error)
+end
+
 return Bridge

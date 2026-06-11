@@ -490,32 +490,33 @@ function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mod
     end)
 end
 
--- ── Save highlight + optional context as KOReader book note ────────────────────
+-- ── Save highlight + optional context to Obsidian vault via bridge ─────────────
 
 function PiRead:saveHighlightNote(highlight_text, user_context)
-    -- Build the note text: highlight + optional user context
-    local note_lines = {}
-    table.insert(note_lines, "— " .. highlight_text)
-    if user_context and user_context:match("%S") then
-        table.insert(note_lines, "")
-        table.insert(note_lines, user_context)
-    end
-    local note_text = table.concat(note_lines, "\n")
+    local props  = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
+    local book_title  = props.title   or ""
+    local book_author = props.authors or ""
+    local reading_pct = self:currentReadingPct()
 
-    -- KOReader's highlight:addNote(text) saves the current selected_text
-    -- as a highlight and opens the edit-note dialog pre-filled with text.
-    -- It must be called while selected_text is still set on ui.highlight.
-    local ok, err = pcall(function()
-        self.ui.highlight:addNote(note_text)
-    end)
+    local close_loading = self:showLoadingAnim(_("Saving to vault…"))
 
-    if not ok then
+    Bridge:noteAsync({
+        highlight   = highlight_text,
+        context     = user_context ~= "" and user_context or nil,
+        book_title  = book_title  ~= "" and book_title  or nil,
+        book_author = book_author ~= "" and book_author or nil,
+        reading_pct = reading_pct,
+    }, function(resp)
+        close_loading()
+        local msg = resp and resp.path
+            and T(_("Saved to vault"), resp.path)
+            or _("Saved to vault")
+        UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
+    end, function(err)
+        close_loading()
         logger.warn("piread saveHighlightNote:", err)
-        UIManager:show(InfoMessage:new{
-            text    = _("Pi: could not save note"),
-            timeout = 4,
-        })
-    end
+        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 5 })
+    end)
 end
 
 function PiRead:showChatDialog()
