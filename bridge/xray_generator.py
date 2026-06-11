@@ -32,7 +32,7 @@ PROFILE           = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
 REGION            = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
 MODEL_ID          = os.environ.get("PIREAD_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 # Haiku for chunk/pass extraction — faster + cheaper; Sonnet only for single-shot
-CHUNK_MODEL_ID    = os.environ.get("PIREAD_CHUNK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+CHUNK_MODEL_ID    = os.environ.get("PIREAD_CHUNK_MODEL_ID", MODEL_ID)
 MAX_TOKENS        = int(os.environ.get("PIREAD_XRAY_MAX_TOKENS", "16384"))
 MAX_PARALLEL_CHUNKS = int(os.environ.get("PIREAD_MAX_PARALLEL_CHUNKS", "4"))
 
