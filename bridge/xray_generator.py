@@ -220,16 +220,43 @@ def _norm_timeline(data: dict) -> list[dict]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        # Accept chapter or chapter_title as the chapter key
         chapter = item.get("chapter") or item.get("chapter_title") or ""
         event   = item.get("event")   or item.get("summary") or item.get("description") or ""
         if not chapter or not event:
             continue
-        result.append({
+        entry = {
             "chapter":      str(chapter).strip(),
             "event":        str(event).strip(),
             "position_pct": int(item.get("position_pct") or item.get("pct") or 0),
-        })
+        }
+        # New fields — include if present
+        sig = item.get("significance") or item.get("why") or ""
+        if sig:
+            entry["significance"] = str(sig).strip()
+        chars = item.get("characters") or []
+        if isinstance(chars, list) and chars:
+            entry["characters"] = [str(c).strip() for c in chars if c]
+        result.append(entry)
+    return result
+
+
+def _norm_themes(data: dict) -> list[dict]:
+    """Themes use 'name'/'description' but also carry a 'references' list."""
+    items = data.get("themes") or []
+    if not isinstance(items, list):
+        return []
+    result = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        entry = {
+            "name":        str(item["name"]).strip(),
+            "description": str(item.get("description") or "").strip(),
+        }
+        refs = item.get("references") or []
+        if isinstance(refs, list) and refs:
+            entry["references"] = [str(r).strip() for r in refs if r]
+        result.append(entry)
     return result
 
 
@@ -238,9 +265,10 @@ def _normalize(raw: dict) -> dict:
         "book_type":          raw.get("book_type", "fiction"),
         "characters":         _norm_list(raw, "characters"),
         "locations":          _norm_list(raw, "locations"),
+        "themes":             _norm_themes(raw),
         "terms":              _norm_list(raw, "terms"),
         "historical_figures": _norm_list(raw, "historical_figures"),
-        "references":          _norm_list(raw, "references"),
+        "references":         _norm_list(raw, "references"),
         "timeline":           sorted(
             _norm_timeline(raw),
             key=lambda e: e.get("position_pct", 0)
@@ -280,9 +308,10 @@ def _merge(results: list[dict]) -> dict:
         "book_type":          "fiction",
         "characters":         [],
         "locations":          [],
+        "themes":             [],
         "terms":              [],
         "historical_figures": [],
-        "references":          [],
+        "references":         [],
         "timeline":           [],
         "author_info":        None,
     }
@@ -292,9 +321,10 @@ def _merge(results: list[dict]) -> dict:
         merged["book_type"] = r.get("book_type", merged["book_type"])
         merged["characters"]         = _dedup(merged["characters"],         r.get("characters", []))
         merged["locations"]          = _dedup(merged["locations"],          r.get("locations", []),  "description")
+        merged["themes"]             = _dedup(merged["themes"],             r.get("themes", []),     "description")
         merged["terms"]              = _dedup(merged["terms"],              r.get("terms", []),      "definition")
         merged["historical_figures"] = _dedup(merged["historical_figures"], r.get("historical_figures", []), "biography")
-        merged["references"]          = _dedup(merged["references"],          r.get("references", []),          "description")
+        merged["references"]         = _dedup(merged["references"],         r.get("references", []),         "description")
         merged["timeline"].extend(r.get("timeline", []))
         if r.get("author_info") and not merged["author_info"]:
             merged["author_info"] = r["author_info"]
@@ -367,6 +397,7 @@ Return a JSON object with these exact fields (use [] not null for empty arrays):
       \"role\": \"Under 40 chars. e.g. 'Protagonist, Red Helldiver'\",
       \"description\": \"Under 200 chars. Who they are: background, personality, relationships, role. NO deaths, fates, or plot outcomes. Describe as of first appearance only.\",
       \"aliases\": [\"other names or titles used for this character\"],
+      \"connections\": [\"Other Character (relationship, e.g. 'ally', 'rival', 'sibling', 'mentor')\"],
       \"first_appearance_pct\": 0
     }
   ],
@@ -375,6 +406,13 @@ Return a JSON object with these exact fields (use [] not null for empty arrays):
       \"name\": \"Place name\",
       \"description\": \"Under 120 chars.\",
       \"importance\": \"Under 60 chars. Why it matters.\"
+    }
+  ],
+  \"themes\": [
+    {
+      \"name\": \"Theme or recurring motif\",
+      \"description\": \"Under 180 chars. How this theme manifests through characters, conflicts, and imagery. Describe structurally — themes are safe to describe without spoilers.\",
+      \"references\": [\"character or location name that embodies this theme\"]
     }
   ],
   \"terms\": [
@@ -404,6 +442,8 @@ Return a JSON object with these exact fields (use [] not null for empty arrays):
     {
       \"chapter\": \"Chapter title copied exactly from [CHAPTER: \\\"...\\\"] marker\",
       \"event\": \"Under 120 chars. One clear sentence: what happens and to whom.\",
+      \"significance\": \"Under 80 chars. What this event changes or reveals — the turning point or consequence.\",
+      \"characters\": [\"names of characters directly involved in this event\"],
       \"position_pct\": 0
     }
   ],
@@ -416,13 +456,17 @@ Return a JSON object with these exact fields (use [] not null for empty arrays):
 }"""
 
 _REFERENCE_RULES = """\
-References: Extract 10-25 external references — real-world works, historical events, mythological figures, philosophical concepts, or cultural touchstones that the author explicitly invokes or structurally parallels. Only include references where the book clearly draws on them, not vague thematic similarities. For each, set first_appearance_pct to where it first appears."""
+References: Extract 10-25 external references — real-world works, historical events, mythological figures, philosophical concepts, or cultural touchstones that the author explicitly invokes or structurally parallels. Only include references where the book clearly draws on them, not vague thematic similarities. For each, set first_appearance_pct to where it first appears.
+
+Themes: Extract 4-10 major themes or recurring motifs. Themes describe structural patterns — they emerge from page one and are fully describable without spoilers. Focus on how a theme manifests (imagery, character dynamics, recurring situations) rather than how it resolves. For each theme, list 2-4 characters or locations that embody it."""
 
 _TIMELINE_RULES = """\
 Timeline rules:
 - Extract 25–45 significant plot events in chronological order.
-- For each event, use the nearest [CHAPTER: \"...\"] marker above it to set both
+- For each event, use the nearest [CHAPTER: \"...\"] marker above it to set
   \"chapter\" (copy the title exactly) and \"position_pct\" (copy the number).
+- \"significance\": under 80 chars — what this event changes or reveals (turning point, revelation, consequence).
+- \"characters\": list names of characters directly involved in this event.
 - Every event must describe a concrete action, revelation, or turning point
   (not setting descriptions or character introductions — those go in characters/locations).
 - Do NOT leave timeline as an empty array. If the text has a story, it has events.
