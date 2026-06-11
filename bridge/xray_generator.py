@@ -697,34 +697,52 @@ def _gpt_single_shot(content: "EpubContent") -> tuple:
 def generate(content: EpubContent) -> dict:
     """
     Generate a complete X-Ray for a book.
-    Strategy: GPT-5.5 via bedrock-mantle (primary) → Sonnet fallback.
+    GPT-5.5 primary (parallel for large books) → Sonnet fallback.
     Returns (xray_dict, strategy_name).
     """
-    # ── GPT-5.5 via bedrock-mantle (primary) ─────────────────────────────────
-    if MODEL_ID.startswith("openai.") and content.total_chars <= GPT_SINGLE_SHOT_LIMIT:
+    if MODEL_ID.startswith("openai."):
+        # ── GPT-5.5 primary (all sizes) ──────────────────────────────────────────
+        # Single-shot for books ≤ 800K chars; parallel two_pass/chunked for larger.
+        # _two_pass and _chunked call _call(prompt, CHUNK_MODEL_ID) which routes to
+        # _call_gpt automatically since CHUNK_MODEL_ID inherits MODEL_ID.
         try:
-            xray, strategy = _gpt_single_shot(content)
+            if content.total_chars <= GPT_SINGLE_SHOT_LIMIT:
+                xray, strategy = _gpt_single_shot(content)
+            elif content.total_chars <= TWO_PASS_LIMIT:
+                xray     = _two_pass(content)
+                strategy = "gpt_two_pass"
+            else:
+                xray     = _chunked(content)
+                strategy = "gpt_chunked"
+            logger.info(
+                "GPT X-Ray (%s): %d characters | %d themes | %d locations | %d timeline_events",
+                strategy,
+                len(xray.get("characters", [])),
+                len(xray.get("themes", [])),
+                len(xray.get("locations", [])),
+                len(xray.get("timeline", [])),
+            )
             return xray, strategy
         except Exception as e:
             logger.warning("GPT X-Ray failed (%s), falling back to Sonnet", e)
 
-    # ── Sonnet fallback (parallel strategies) ────────────────────────────────
+    # ── Sonnet fallback (parallel strategies) ────────────────────────────────────
     if content.total_chars <= SINGLE_SHOT_LIMIT:
-        xray = _single_shot(content)
+        xray     = _single_shot(content)
         strategy = "single_shot"
     elif content.total_chars <= TWO_PASS_LIMIT:
-        xray = _two_pass(content)
+        xray     = _two_pass(content)
         strategy = "two_pass"
     else:
-        xray = _chunked(content)
+        xray     = _chunked(content)
         strategy = "chunked"
 
     logger.info(
-        "Generated X-Ray: %d characters | %d locations | %d terms | %d hist_figs | %d timeline_events",
+        "Sonnet X-Ray (%s): %d characters | %d locations | %d terms | %d timeline_events",
+        strategy,
         len(xray.get("characters", [])),
         len(xray.get("locations", [])),
         len(xray.get("terms", [])),
-        len(xray.get("historical_figures", [])),
         len(xray.get("timeline", [])),
     )
     return xray, strategy
