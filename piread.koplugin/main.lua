@@ -108,29 +108,63 @@ function PiRead:onDocLoad()
     local s = self:loadSettings()
     if not s.enabled then return end
 
-    -- Get book info
     local props  = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
     local title  = (props.title)   or ""
     local author = (props.authors) or ""
     if title == "" then return end
 
-    -- Check local cache first (instant)
+    -- Load from device cache immediately (instant)
     local record, hash = Cache.findByTitle(title)
     if record and record.xray then
         logger.info("piread: X-Ray loaded from local cache:", title)
-        self._xray      = record.xray
-        self._book_hash = hash or record.book and record.book.epub_hash
-        self._book_meta = record.book
+        self._xray           = record.xray
+        self._book_hash      = hash or record.book and record.book.epub_hash
+        self._book_meta      = record.book
+        self._local_gen_at   = record.generated_at or ""
+        -- Background freshness check — silently update if Mac has newer version
+        UIManager:scheduleIn(3, function()
+            self:checkXRayFreshness(title, author)
+        end)
         return
     end
 
-    -- No local cache — try bridge (only if network available)
-    if not NetworkMgr:isConnected() then return end
-
+    -- No local cache — try bridge
     local reading_pct = self:currentReadingPct()
     UIManager:scheduleIn(2, function()
         self:requestXRay(title, author, reading_pct)
     end)
+end
+
+function PiRead:checkXRayFreshness(title, author)
+    if not NetworkMgr:isConnected() then return end
+    local gen_at = self._local_gen_at or ""
+    local resp, err = Bridge:xrayInit({
+        book_title          = title,
+        book_author         = author,
+        reading_pct         = self:currentReadingPct(),
+        device_generated_at = gen_at,
+    })
+    if err or not resp then return end
+    if resp.status == "current" then
+        logger.info("piread: X-Ray is current for", title)
+        return
+    end
+    if resp.status == "ready" and resp.xray then
+        logger.info("piread: X-Ray updated from bridge for", title)
+        self._xray      = resp.xray
+        self._book_meta = resp.book
+        self._book_hash = resp.book and resp.book.epub_hash
+        self._local_gen_at = resp.generated_at or ""
+        local bh = self._book_hash
+        if bh then
+            Cache.saveXray(bh, {
+                xray         = resp.xray,
+                book         = resp.book,
+                generated_at = resp.generated_at,
+            })
+        end
+        logger.info("piread: Device X-Ray cache refreshed for", title)
+    end
 end
 
 function PiRead:currentReadingPct()
@@ -308,7 +342,6 @@ function PiRead:hookHighlightDialog()
     self.ui.highlight:addToHighlightDialog("11_ask_pi", function(this)
         local s = self:loadSettings()
         if not s.enabled then return nil end
-        if not NetworkMgr:isConnected() then return nil end
 
         return {
             text = _("Ask Pi"),
@@ -510,10 +543,6 @@ function PiRead:buildMenu()
     table.insert(items, {
         text     = _("Ask Pi"),
         callback = function()
-            if not NetworkMgr:isConnected() then
-                UIManager:show(InfoMessage:new{ text = _("Pi: no network"), timeout = 3 })
-                return
-            end
             self:showChatDialog()
         end,
     })

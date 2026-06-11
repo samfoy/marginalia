@@ -352,7 +352,7 @@ Return a JSON object with these exact fields (use [] not null for empty arrays):
     {
       \"name\": \"Full name as used in the book\",
       \"role\": \"Under 40 chars. e.g. 'Protagonist, Red Helldiver'\",
-      \"description\": \"Under 250 chars. Who they are, their arc, key traits.\",
+      \"description\": \"Under 200 chars. Who they are: background, personality, relationships, role. NO deaths, fates, or plot outcomes. Describe as of first appearance only.\",
       \"aliases\": [\"other names or titles used for this character\"],
       \"first_appearance_pct\": 0
     }
@@ -412,7 +412,8 @@ Timeline rules:
   \"chapter\" (copy the title exactly) and \"position_pct\" (copy the number).
 - Every event must describe a concrete action, revelation, or turning point
   (not setting descriptions or character introductions — those go in characters/locations).
-- Do NOT leave timeline as an empty array. If the text has a story, it has events."""
+- Do NOT leave timeline as an empty array. If the text has a story, it has events.
+- CRITICAL: Character descriptions are IDENTITY ONLY — who someone is, not what happens to them. Absolutely no deaths, fates, endings, or plot resolutions in descriptions. A reader who has read only 1 page should be safe reading any character description. Deaths and fates belong ONLY in timeline events."""
 
 
 def _full_prompt(title: str, author: str, annotated_text: str,

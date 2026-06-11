@@ -23,7 +23,7 @@ local ffi        = require("ffi")
 local Async = {}
 
 local POLL_INTERVAL = 1.5
-local MAX_POLLS     = 40    -- 60s max
+local MAX_POLLS     = 80    -- 120s max
 
 local ERR_MARKER = "PIREAD_ERR:"
 

@@ -36,7 +36,7 @@ SYSTEM_PROMPT = (
 )
 
 # How long to wait for a response before giving up
-RESPONSE_TIMEOUT = int(os.environ.get("PIREAD_CHAT_TIMEOUT", "60"))
+RESPONSE_TIMEOUT = int(os.environ.get("PIREAD_CHAT_TIMEOUT", "90"))
 
 
 class PiSession:

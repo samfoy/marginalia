@@ -435,6 +435,7 @@ class Handler(BaseHTTPRequestHandler):
         title  = (req.get("book_title") or "").strip()
         author = (req.get("book_author") or "").strip()
         reading_pct = float(req.get("reading_pct") or 0)
+        device_generated_at = (req.get("device_generated_at") or "").strip()
 
         if not title:
             self.send_error(400, "Missing book_title"); return
@@ -445,8 +446,14 @@ class Handler(BaseHTTPRequestHandler):
             logging.info("X-Ray cache HIT: %s", title)
             if reading_pct:
                 xray_cache.update_reading_pct(cached["book"]["epub_hash"], reading_pct)
+            mac_generated_at = cached.get("generated_at", "")
+            # If device already has this version, just confirm it's current
+            if device_generated_at and device_generated_at >= mac_generated_at:
+                self._send_json(200, {"status": "current"})
+                return
             self._send_json(200, {"status": "ready", "cached": True,
-                                   "xray": cached["xray"], "book": cached["book"]})
+                                   "xray": cached["xray"], "book": cached["book"],
+                                   "generated_at": mac_generated_at})
             return
 
         # ── Start background generation job ─────────────────────────────────
