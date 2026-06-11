@@ -697,34 +697,10 @@ def _gpt_single_shot(content: "EpubContent") -> tuple:
 def generate(content: EpubContent) -> dict:
     """
     Generate a complete X-Ray for a book.
-    Uses pi (with tools) if epub_path is available, otherwise falls back
-    to direct Bedrock generation.
+    Strategy: GPT-5.5 via bedrock-mantle (primary) → Sonnet fallback.
     Returns (xray_dict, strategy_name).
     """
-    # ── Pi-based generation (preferred) ──────────────────────────────────────
-    if content.epub_path and os.path.exists(content.epub_path):
-        try:
-            from pi_xray import generate as pi_generate
-            xray, strategy = pi_generate(
-                epub_path=content.epub_path,
-                title=content.title or "Unknown",
-                author=content.author or "Unknown",
-                reading_pct=100.0,
-            )
-            xray = _normalize(xray)
-            logger.info(
-                "pi_xray Generated X-Ray: %d characters | %d locations | %d terms | %d hist_figs | %d timeline_events",
-                len(xray.get("characters", [])),
-                len(xray.get("locations", [])),
-                len(xray.get("terms", [])),
-                len(xray.get("historical_figures", [])),
-                len(xray.get("timeline", [])),
-            )
-            return xray, strategy
-        except Exception as e:
-            logger.warning("pi_xray failed (%s), falling back to direct generation", e)
-
-    # ── GPT-5.5 via bedrock-mantle (primary direct path) ─────────────────
+    # ── GPT-5.5 via bedrock-mantle (primary) ─────────────────────────────────
     if MODEL_ID.startswith("openai.") and content.total_chars <= GPT_SINGLE_SHOT_LIMIT:
         try:
             xray, strategy = _gpt_single_shot(content)
@@ -732,7 +708,7 @@ def generate(content: EpubContent) -> dict:
         except Exception as e:
             logger.warning("GPT X-Ray failed (%s), falling back to Sonnet", e)
 
-    # ── Sonnet fallback (parallel strategies) ──────────────────────────
+    # ── Sonnet fallback (parallel strategies) ────────────────────────────────
     if content.total_chars <= SINGLE_SHOT_LIMIT:
         xray = _single_shot(content)
         strategy = "single_shot"
