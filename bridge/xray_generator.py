@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import threading
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,11 +32,17 @@ logger = logging.getLogger(__name__)
 
 PROFILE           = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
 REGION            = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
-MODEL_ID          = os.environ.get("PIREAD_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
-# Haiku for chunk/pass extraction — faster + cheaper; Sonnet only for single-shot
-CHUNK_MODEL_ID    = os.environ.get("PIREAD_CHUNK_MODEL_ID", MODEL_ID)
+# Primary: GPT-5.5 via bedrock-mantle (richer extraction)
+# Fallback: Sonnet via direct Bedrock (reliable, spoiler-safe)
+MODEL_ID          = os.environ.get("PIREAD_MODEL_ID",          "openai.gpt-5.5")
+FALLBACK_MODEL_ID = os.environ.get("PIREAD_FALLBACK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+CHUNK_MODEL_ID    = os.environ.get("PIREAD_CHUNK_MODEL_ID",    MODEL_ID)
 MAX_TOKENS        = int(os.environ.get("PIREAD_XRAY_MAX_TOKENS", "16384"))
 MAX_PARALLEL_CHUNKS = int(os.environ.get("PIREAD_MAX_PARALLEL_CHUNKS", "4"))
+
+# GPT-5.5 context: 272K tokens ≈ 1.1M chars. Keep headroom for prompt overhead.
+GPT_SINGLE_SHOT_LIMIT = 800_000
+GPT_EMPTY_RETRIES     = int(os.environ.get("PIREAD_GPT_RETRIES", "3"))
 
 # Large context requests can take several minutes
 _BEDROCK_CONFIG = BotocoreConfig(
@@ -138,15 +146,71 @@ def _client():
     return _cached_client
 
 
+# ── Bedrock-Mantle client for GPT-5.x (SigV4, us-east-2) ─────────────────────
+
+_gpt_creds_lock  = threading.Lock()
+_gpt_creds_cache = None
+
+def _gpt_creds():
+    global _gpt_creds_cache
+    if _gpt_creds_cache is None:
+        with _gpt_creds_lock:
+            if _gpt_creds_cache is None:
+                from botocore.auth import SigV4Auth
+                from botocore.awsrequest import AWSRequest
+                session = boto3.Session(profile_name=PROFILE, region_name="us-east-2")
+                _gpt_creds_cache = (
+                    session.get_credentials().get_frozen_credentials(),
+                    SigV4Auth,
+                    AWSRequest,
+                )
+    return _gpt_creds_cache
+
+
+def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5") -> str:
+    """Call GPT-5.x via bedrock-mantle Responses API with empty-completion retry."""
+    creds, SigV4Auth, AWSRequest = _gpt_creds()
+    url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses"
+    body_dict = {
+        "model": model_id,
+        "max_output_tokens": MAX_TOKENS,
+        "instructions": _SYSTEM,
+        "input": prompt,
+    }
+    for attempt in range(GPT_EMPTY_RETRIES):
+        body_bytes = json.dumps(body_dict).encode()
+        req = AWSRequest(method="POST", url=url, data=body_bytes,
+                         headers={"Content-Type": "application/json"})
+        SigV4Auth(creds, "bedrock", "us-east-2").add_auth(req)
+        try:
+            r = urllib.request.urlopen(
+                urllib.request.Request(url, data=body_bytes, headers=dict(req.headers)),
+                timeout=600,
+            )
+            d = json.loads(r.read())
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"GPT API {exc.code}: {exc.read()[:200]}") from exc
+        text = "".join(
+            c["text"]
+            for item in d.get("output", [])
+            for c in item.get("content", [])
+            if c.get("type") == "output_text"
+        )
+        if text.strip():
+            return text
+        logger.warning("_call_gpt empty completion attempt %d/%d", attempt + 1, GPT_EMPTY_RETRIES)
+    raise RuntimeError(f"_call_gpt: empty completion after {GPT_EMPTY_RETRIES} retries")
+
+
 def _call(prompt: str, model_id: str = MODEL_ID) -> str:
-    """Make a Bedrock call. Returns raw response text."""
+    """Route to the right API based on model prefix."""
+    if model_id.startswith("openai."):
+        return _call_gpt(prompt, model_id)
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": MAX_TOKENS,
         "system": _SYSTEM,
-        "messages": [
-            {"role": "user", "content": prompt},
-        ],
+        "messages": [{"role": "user", "content": prompt}],
     }
     resp = _client().invoke_model(
         modelId=model_id,
@@ -613,6 +677,23 @@ def _chunked(content: EpubContent) -> dict:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+def _gpt_single_shot(content: "EpubContent") -> tuple:
+    """Single-shot X-Ray via GPT-5.5 (bedrock-mantle). Returns (xray, strategy)."""
+    logger.info("Strategy: gpt_single_shot (%d chars, %d chapters)",
+                content.total_chars, len(content.chapters))
+    text, n = _annotated_text(content.chapters)
+    logger.info("  annotated text: %d chars", n)
+    prompt = _full_prompt(content.title, content.author, text, _series_tag(content))
+    raw  = _call_gpt(prompt)
+    xray = _normalize(_parse(raw))
+    logger.info(
+        "GPT X-Ray: %d characters | %d locations | %d themes | %d timeline_events",
+        len(xray.get("characters", [])), len(xray.get("locations", [])),
+        len(xray.get("themes", [])),    len(xray.get("timeline", [])),
+    )
+    return xray, "gpt_single_shot"
+
+
 def generate(content: EpubContent) -> dict:
     """
     Generate a complete X-Ray for a book.
@@ -643,7 +724,15 @@ def generate(content: EpubContent) -> dict:
         except Exception as e:
             logger.warning("pi_xray failed (%s), falling back to direct generation", e)
 
-    # ── Bedrock fallback (knowledge-only or pi unavailable) ───────────────────
+    # ── GPT-5.5 via bedrock-mantle (primary direct path) ─────────────────
+    if MODEL_ID.startswith("openai.") and content.total_chars <= GPT_SINGLE_SHOT_LIMIT:
+        try:
+            xray, strategy = _gpt_single_shot(content)
+            return xray, strategy
+        except Exception as e:
+            logger.warning("GPT X-Ray failed (%s), falling back to Sonnet", e)
+
+    # ── Sonnet fallback (parallel strategies) ──────────────────────────
     if content.total_chars <= SINGLE_SHOT_LIMIT:
         xray = _single_shot(content)
         strategy = "single_shot"
