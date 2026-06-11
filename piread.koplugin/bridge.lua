@@ -15,6 +15,8 @@ local rapidjson  = require("rapidjson")
 local socketutil = require("socketutil")
 local logger     = require("logger")
 
+local Async = require("piread_async")
+
 local Bridge = {
     host          = "macbook.local",
     port          = 7731,
@@ -105,6 +107,57 @@ function Bridge:ask(params)
     return resp.response
 end
 
+--- Freeform chat with book context.
+-- params: {question, book_title, book_author, reading_pct, xray}
+function Bridge:chat(params)
+    -- Build a compact xray summary to send (characters + recent events)
+    local xray_summary = nil
+    if params.xray then
+        local parts = {}
+        local chars = params.xray.characters or {}
+        if #chars > 0 then
+            local names = {}
+            for i = 1, math.min(#chars, 20) do
+                table.insert(names, chars[i].name)
+            end
+            table.insert(parts, "Characters: " .. table.concat(names, ", "))
+        end
+        local events = params.xray.timeline or {}
+        local pct = params.reading_pct or 0
+        local recent = {}
+        for _, ev in ipairs(events) do
+            if (ev.chapter_pct or 0) <= pct then
+                table.insert(recent, ev)
+            end
+        end
+        -- Last 8 events the reader has reached
+        local start = math.max(1, #recent - 7)
+        local event_lines = {}
+        for i = start, #recent do
+            table.insert(event_lines, recent[i].summary or recent[i].event or "")
+        end
+        if #event_lines > 0 then
+            table.insert(parts, "Recent story events: " .. table.concat(event_lines, "; "))
+        end
+        if #parts > 0 then
+            xray_summary = table.concat(parts, "\n")
+        end
+    end
+
+    local payload = {
+        question    = params.question,
+        book_title  = params.book_title,
+        book_author = params.book_author,
+        reading_pct = params.reading_pct,
+        xray_summary = xray_summary,
+        mode        = "chat",
+    }
+    local resp, err = self:_post("/chat", payload, self.TIMEOUT_BLOCK, self.TIMEOUT_TOTAL)
+    if err then return nil, err end
+    if resp.error then return nil, resp.error end
+    return resp.response
+end
+
 --- Initialise X-Ray for a book.
 -- params: {book_title, book_author, reading_pct}
 -- Returns:
@@ -127,6 +180,55 @@ function Bridge:xrayProgress(book_hash, reading_pct)
         book_hash   = book_hash,
         reading_pct = reading_pct,
     })
+end
+
+--- Async ask — returns cancel(). Calls on_done(text) or on_error(err).
+function Bridge:askAsync(params, on_done, on_error)
+    return Async.post(self:url("/ask"), params, on_done, on_error)
+end
+
+--- Async chat — returns cancel(). Calls on_done(text) or on_error(err).
+function Bridge:chatAsync(params, on_done, on_error)
+    -- Build compact xray summary inline (same logic as chat(), but for the payload)
+    local xray_summary = nil
+    if params.xray then
+        local parts = {}
+        local chars = params.xray.characters or {}
+        if #chars > 0 then
+            local names = {}
+            for i = 1, math.min(#chars, 20) do
+                table.insert(names, chars[i].name)
+            end
+            table.insert(parts, "Characters: " .. table.concat(names, ", "))
+        end
+        local events = params.xray.timeline or {}
+        local pct = params.reading_pct or 0
+        local recent = {}
+        for _, ev in ipairs(events) do
+            if (ev.chapter_pct or 0) <= pct then
+                table.insert(recent, ev)
+            end
+        end
+        local start = math.max(1, #recent - 7)
+        local event_lines = {}
+        for i = start, #recent do
+            table.insert(event_lines, recent[i].summary or recent[i].event or "")
+        end
+        if #event_lines > 0 then
+            table.insert(parts, "Recent events: " .. table.concat(event_lines, "; "))
+        end
+        if #parts > 0 then xray_summary = table.concat(parts, "\n") end
+    end
+
+    local payload = {
+        question     = params.question,
+        book_title   = params.book_title,
+        book_author  = params.book_author,
+        reading_pct  = params.reading_pct,
+        xray_summary = xray_summary,
+        page_text    = params.page_text,
+    }
+    return Async.post(self:url("/chat"), payload, on_done, on_error)
 end
 
 return Bridge

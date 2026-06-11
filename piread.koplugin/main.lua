@@ -10,6 +10,7 @@ All features degrade gracefully when offline or bridge is unreachable.
 --]]--
 
 local ButtonDialog     = require("ui/widget/buttondialog")
+local InputDialog      = require("ui/widget/inputdialog")
 local Device           = require("device")
 local Dispatcher       = require("dispatcher")
 local InfoMessage      = require("ui/widget/infomessage")
@@ -77,7 +78,6 @@ function PiRead:init()
     self:applySettings()
     self:onDispatcherRegisterActions()
     if self.document then
-        self:onDocLoad()
         self:hookHighlightDialog()
     end
     self.ui.menu:registerToMainMenu(self)
@@ -99,14 +99,19 @@ function PiRead:onPiReadNowReading()
     Context.show(self.ui, self._xray, Bridge, pct)
 end
 
+function PiRead:onReaderReady()
+    self:hookHighlightDialog()
+    self:onDocLoad()
+end
+
 function PiRead:onDocLoad()
     local s = self:loadSettings()
     if not s.enabled then return end
 
     -- Get book info
-    local props = self.ui.document:getProps()
-    local title  = (props and props.title)   or ""
-    local author = (props and props.authors) or ""
+    local props  = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
+    local title  = (props.title)   or ""
+    local author = (props.authors) or ""
     if title == "" then return end
 
     -- Check local cache first (instant)
@@ -130,10 +135,81 @@ end
 
 function PiRead:currentReadingPct()
     if not (self.ui and self.ui.document) then return 0 end
+    -- Prefer doc_settings percent_finished (more accurate, matches Hardcover sync)
+    if self.ui.doc_settings then
+        local pf = self.ui.doc_settings:readSetting("percent_finished")
+        if pf and pf > 0 then return math.floor(pf * 100 + 0.5) end
+    end
     local cur   = self.ui:getCurrentPage()
     local total = self.ui.document:getPageCount()
     if not cur or not total or total == 0 then return 0 end
     return math.floor(cur / total * 100)
+end
+
+-- Extract text of current page(s) to send as reading context.
+function PiRead:getCurrentPageText(max_chars)
+    max_chars = max_chars or 3000
+    if not (self.ui and self.ui.document) then return nil end
+    local doc = self.ui.document
+    local ok, text = pcall(function()
+        if not doc.info.has_pages then
+            -- EPUB: use XPointers
+            if not doc.getXPointer or not doc.getPageXPointer or not doc.getTextFromXPointers then
+                return nil
+            end
+            local cur_xp = doc:getXPointer()
+            if not cur_xp then return nil end
+            local cur_page = doc:getPageFromXPointer(cur_xp) or 1
+            local start_page = math.max(1, cur_page - 2)
+            local end_page   = math.min(doc.info.number_of_pages or cur_page, cur_page + 1)
+            local start_xp   = doc:getPageXPointer(start_page)
+            local end_xp     = doc:getPageXPointer(end_page)
+            if start_xp and end_xp then
+                return doc:getTextFromXPointers(start_xp, end_xp)
+            end
+        else
+            -- PDF: extract current page text
+            if not doc.getPageText then return nil end
+            local page = self.ui.view and self.ui.view.state and self.ui.view.state.page or 1
+            local t = doc:getPageText(page)
+            if type(t) == "string" then return t end
+        end
+        return nil
+    end)
+    if not ok or not text or text == "" then return nil end
+    if #text > max_chars then text = text:sub(1, max_chars) end
+    return text
+end
+
+-- Animated loading indicator. Returns close() function.
+function PiRead:showLoadingAnim(label)
+    local base   = label or _("Asking Pi")
+    local dots   = { ".", "..", "..." }
+    local idx    = 1
+    local task   = nil
+    local closed = false
+
+    -- Single persistent InfoMessage — update text in place
+    local dialog = InfoMessage:new{ text = base .. dots[idx] }
+    UIManager:show(dialog)
+
+    local function tick()
+        if closed then return end
+        idx = (idx % #dots) + 1
+        -- Update text without closing/reopening (avoids e-ink repaint storm)
+        if dialog.text_widget then
+            pcall(function() dialog.text_widget:setText(base .. dots[idx]) end)
+        end
+        task = UIManager:scheduleIn(0.8, tick)
+    end
+    task = UIManager:scheduleIn(0.8, tick)
+
+    return function()
+        if closed then return end
+        closed = true
+        if task then UIManager:unschedule(task) end
+        UIManager:close(dialog)
+    end
 end
 
 -- ── X-Ray request & polling ───────────────────────────────────────────────────
@@ -242,9 +318,9 @@ function PiRead:hookHighlightDialog()
 
                 local text = util.cleanupSelectedText(sel.text)
                 local prev_ctx, next_ctx = this:getSelectedWordContext(40)
-                local props = this.ui.document:getProps()
-                local book_title  = (props and props.title)   or ""
-                local book_author = (props and props.authors) or ""
+                local props = this.ui.doc_props or (this.ui.document and this.ui.document:getProps()) or {}
+                local book_title  = props.title   or ""
+                local book_author = props.authors or ""
 
                 -- First: check if this word is in the local X-Ray cache
                 if self._xray then
@@ -311,34 +387,59 @@ end
 -- ── Ask bridge (conversational) ───────────────────────────────────────────────
 
 function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mode_id, mode_label)
-    local loading = InfoMessage:new{ text = _("Asking Pi…"), timeout = 30 }
-    UIManager:show(loading)
-    UIManager:scheduleIn(0.1, function()
-        local ctx = ""
-        if prev_ctx and prev_ctx ~= "" then ctx = prev_ctx .. " " end
-        if next_ctx and next_ctx ~= "" then ctx = ctx .. next_ctx end
+    local close_loading = self:showLoadingAnim(_("Asking Pi"))
 
-        local response, err = Bridge:ask({
-            text        = text,
-            context     = ctx ~= "" and ctx or nil,
-            book_title  = book_title ~= "" and book_title  or nil,
-            book_author = book_author ~= "" and book_author or nil,
-            mode        = mode_id,
-        })
-        UIManager:close(loading)
-        if err then
-            logger.warn("piread:", err)
-            UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
-            return
-        end
+    local ctx = ""
+    if prev_ctx and prev_ctx ~= "" then ctx = prev_ctx .. " " end
+    if next_ctx and next_ctx ~= "" then ctx = ctx .. next_ctx end
+
+    Bridge:askAsync({
+        text        = text,
+        context     = ctx ~= "" and ctx or nil,
+        book_title  = book_title ~= "" and book_title  or nil,
+        book_author = book_author ~= "" and book_author or nil,
+        mode        = mode_id,
+    }, function(response)
+        close_loading()
         UIManager:show(TextViewer:new{
             title  = mode_label,
             text   = response,
             width  = math.floor(Screen:getWidth()  * 0.92),
             height = math.floor(Screen:getHeight() * 0.78),
         })
+    end, function(err)
+        close_loading()
+        logger.warn("piread ask:", err)
+        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
     end)
 end
+
+function PiRead:chatBridge(question, book_title, book_author, reading_pct)
+    local close_loading = self:showLoadingAnim(_("Asking Pi"))
+    local page_text = self:getCurrentPageText(2500)
+
+    Bridge:chatAsync({
+        question    = question,
+        book_title  = book_title ~= "" and book_title  or nil,
+        book_author = book_author ~= "" and book_author or nil,
+        reading_pct = reading_pct,
+        page_text   = page_text,
+        xray        = self._xray,
+    }, function(response)
+        close_loading()
+        UIManager:show(TextViewer:new{
+            title  = _("Pi"),
+            text   = response,
+            width  = math.floor(Screen:getWidth()  * 0.92),
+            height = math.floor(Screen:getHeight() * 0.78),
+        })
+    end, function(err)
+        close_loading()
+        logger.warn("piread chat:", err)
+        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
+    end)
+end
+
 
 -- ── Menu ──────────────────────────────────────────────────────────────────────
 
@@ -364,6 +465,18 @@ function PiRead:buildMenu()
             end
             local pct = s.spoiler_free and self:currentReadingPct() or nil
             Context.show(self.ui, self._xray, Bridge, pct)
+        end,
+    })
+
+    -- Ask Pi (freeform chat)
+    table.insert(items, {
+        text     = _("Ask Pi"),
+        callback = function()
+            if not NetworkMgr:isConnected() then
+                UIManager:show(InfoMessage:new{ text = _("Pi: no network"), timeout = 3 })
+                return
+            end
+            self:showChatDialog()
         end,
     })
 
@@ -436,9 +549,9 @@ function PiRead:buildMenu()
         end,
         callback = function()
             if not (self.ui and self.ui.document) then return end
-            local props = self.ui.document:getProps()
-            local title  = (props and props.title)   or ""
-            local author = (props and props.authors) or ""
+            local props = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
+            local title  = props.title   or ""
+            local author = props.authors or ""
             if title == "" then return end
             -- Clear local cache
             if self._book_hash then Cache.deleteXray(self._book_hash) end

@@ -30,12 +30,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from book_finder import find_epub
 from epub_extract import extract_epub
 from xray_generator import generate, build_record
 import xray_cache
+import pi_session
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -329,6 +331,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/xray/progress":
             self._handle_xray_progress()
             return
+        if self.path == "/chat":
+            self._handle_chat()
+            return
         if self.path != "/ask":
             self.send_error(404)
             return
@@ -377,6 +382,47 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    # ── /chat ─────────────────────────────────────────────────────────────────
+    def _handle_chat(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON"); return
+
+        question     = (req.get("question") or "").strip()
+        book_title   = (req.get("book_title") or "").strip()
+        book_author  = (req.get("book_author") or "").strip()
+        reading_pct  = req.get("reading_pct") or 0
+        xray_summary = (req.get("xray_summary") or "").strip()
+        page_text    = (req.get("page_text") or "").strip()
+
+        if not question:
+            self.send_error(400, "Missing question"); return
+
+        # Build book context block
+        ctx_parts = []
+        if book_title:
+            line = f'Book: "{book_title}"'
+            if book_author:
+                line += f" by {book_author}"
+            if reading_pct:
+                line += f" ({reading_pct:.0f}% read)"
+            ctx_parts.append(line)
+        if xray_summary:
+            ctx_parts.append(xray_summary)
+        if page_text:
+            ctx_parts.append(f"Current page text:\n{page_text}")
+        book_context = "\n".join(ctx_parts)
+
+        try:
+            session = pi_session.get_session()
+            response_text = session.ask(question, book_context)
+            self._send_json(200, {"response": response_text, "error": None})
+        except Exception as exc:
+            logging.exception("pi_session /chat error")
+            self._send_json(500, {"response": None, "error": str(exc)})
 
     # ── /xray/init ────────────────────────────────────────────────────────────
     def _handle_xray_init(self):
@@ -451,6 +497,9 @@ def main():
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)
     logging.info("piread-bridge listening on :%d  model=%s  profile=%s", PORT, MODEL_ID, PROFILE)
+
+    # Warm up the pi session in a background thread so the first /chat is fast
+    threading.Thread(target=pi_session.get_session, daemon=True).start()
 
     def _shutdown(sig, _frame):
         logging.info("Shutting down (signal %d)", sig)
