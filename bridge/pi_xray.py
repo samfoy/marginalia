@@ -21,6 +21,7 @@ logger = logging.getLogger("piread.pi_xray")
 
 PI_BIN   = os.environ.get("PIREAD_PI_BIN", "pi")
 PI_MODEL = os.environ.get("PIREAD_PI_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
+SKIP_PI_XRAY = os.environ.get("PIREAD_SKIP_PI_XRAY", "").lower() in ("1", "true", "yes")
 
 # Timeout for X-Ray generation — big books take time
 XRAY_TIMEOUT = int(os.environ.get("PIREAD_XRAY_TIMEOUT", "600"))
@@ -105,8 +106,10 @@ def generate(epub_path: str, title: str, author: str,
     """
     Generate X-Ray using pi with tools.
     Returns (xray_dict, strategy_name).
-    Raises on failure.
+    Raises on failure or empty result.
     """
+    if SKIP_PI_XRAY:
+        raise RuntimeError("pi_xray skipped (PIREAD_SKIP_PI_XRAY=1)")
     prompt = TASK_PROMPT.format(
         title=title,
         author=author,
@@ -180,6 +183,20 @@ def generate(epub_path: str, title: str, author: str,
 
     # Extract JSON from response
     xray = _parse_json(raw_text)
+
+    # Sanity-check: if pi returned an empty or trivially small result,
+    # treat it as a failure so the caller can fall back to direct generation.
+    total_entities = (
+        len(xray.get("characters", [])) +
+        len(xray.get("locations", [])) +
+        len(xray.get("timeline", []))
+    )
+    if total_entities < 3:
+        raise RuntimeError(
+            f"pi_xray returned near-empty result ({total_entities} entities) — "
+            "likely a partial/timed-out response"
+        )
+
     return xray, "pi_conductor"
 
 

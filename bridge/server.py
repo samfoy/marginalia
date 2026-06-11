@@ -25,6 +25,7 @@ import os
 import signal
 import sys
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -306,6 +307,12 @@ class Handler(BaseHTTPRequestHandler):
             # Pi chat uses this to browse the X-Ray cache
             index = xray_cache.load_index()
             self._send_json(200, index)
+        elif self.path == "/v1/models":
+            # KO Assistant probes this to verify the provider
+            self._send_json(200, {
+                "object": "list",
+                "data": [{"id": MODEL_ID, "object": "model", "created": 0, "owned_by": "bedrock"}]
+            })
         elif self.path.startswith("/xray/status/"):
             job_id = self.path.split("/xray/status/", 1)[-1]
             with _jobs_lock:
@@ -334,6 +341,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/chat":
             self._handle_chat()
+            return
+        if self.path == "/v1/chat/completions":
+            self._handle_openai_compat()
             return
         if self.path != "/ask":
             self.send_error(404)
@@ -471,6 +481,70 @@ class Handler(BaseHTTPRequestHandler):
         logging.info("X-Ray job %s started for '%s'", job_id, title)
         self._send_json(202, {"status": "generating", "job_id": job_id,
                                "poll_url": f"/xray/status/{job_id}"})
+
+    # ── /v1/chat/completions (OpenAI-compatible proxy for KO Assistant) ───────
+    def _handle_openai_compat(self):
+        """OpenAI-compatible endpoint so KO Assistant can use Bedrock via our bridge."""
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON"); return
+
+        messages  = req.get("messages", [])
+        model     = req.get("model") or MODEL_ID
+        max_tok   = int(req.get("max_tokens") or MAX_TOKENS)
+
+        # Split out system message (Bedrock takes it separately)
+        system_parts = []
+        bedrock_msgs = []
+        for m in messages:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "system":
+                system_parts.append(content if isinstance(content, str) else str(content))
+            else:
+                bedrock_msgs.append({"role": role, "content": content})
+
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tok,
+            "messages": bedrock_msgs,
+        }
+        if system_parts:
+            body["system"] = " ".join(system_parts)
+
+        try:
+            from xray_generator import _client as bedrock_client
+            resp   = bedrock_client().invoke_model(
+                modelId=model,
+                body=json.dumps(body),
+                contentType="application/json",
+                accept="application/json",
+            )
+            result = json.loads(resp["body"].read())
+            text   = result["content"][0]["text"].strip()
+            usage  = result.get("usage", {})
+            openai_resp = {
+                "id":      f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                "object":  "chat.completion",
+                "created": int(time.time()),
+                "model":   model,
+                "choices": [{
+                    "index":         0,
+                    "message":       {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens":     usage.get("input_tokens", 0),
+                    "completion_tokens": usage.get("output_tokens", 0),
+                    "total_tokens":      usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                },
+            }
+            self._send_json(200, openai_resp)
+        except Exception as exc:
+            logging.exception("OpenAI-compat error")
+            self._send_json(500, {"error": {"message": str(exc), "type": "server_error"}})
 
     # ── /xray/progress ────────────────────────────────────────────────────────
     def _handle_xray_progress(self):
