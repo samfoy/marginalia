@@ -359,7 +359,7 @@ function PiRead:hookHighlightDialog()
                 if self._xray then
                     local kind, entity = XRayUI.lookup(self._xray, text)
                     if kind and entity then
-                        this:onClose(true)
+                        this:onClose()
                         -- Check spoiler guard
                         local s2 = self:loadSettings()
                         if s2.spoiler_free then
@@ -378,7 +378,7 @@ function PiRead:hookHighlightDialog()
                 end
 
                 -- Not in cache — ask bridge
-                this:onClose(true)
+                this:onClose()
                 self:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author)
             end,
         }

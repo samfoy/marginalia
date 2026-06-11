@@ -128,12 +128,15 @@ def generate(epub_path: str, title: str, author: str,
         "--no-skills",
         "--no-prompt-templates",
         "--no-themes",
-        "--tools", "read,bash",          # only read + bash — no edit/write
+        "--tools", "read,bash",
         "--model", PI_MODEL,
         "--system-prompt",
-        "You are an X-Ray generator for a reading assistant app. "
-        "Read books and return structured JSON. Be thorough and accurate. "
-        "Never spoil character fates in descriptions.",
+        "You are an X-Ray generator for a reading assistant. "
+        "Read the book file using your tools, then output ONLY a single valid JSON object. "
+        "No preamble, no explanation, no markdown fences. "
+        "Start your response with '{' and end with '}'. "
+        "CRITICAL: Character descriptions must NEVER mention deaths, fates, or endings. "
+        "Describe only who a character is at first introduction.",
     ]
 
     env = {
@@ -209,7 +212,7 @@ def _wait_ready(proc: subprocess.Popen, timeout: int = 20) -> bool:
 
 def _collect(proc: subprocess.Popen, timeout: int) -> str:
     deadline = time.monotonic() + timeout
-    text_parts: list[str] = []
+    streaming_parts: list[str] = []
 
     while time.monotonic() < deadline:
         line = _readline(proc, timeout=1.0)
@@ -226,7 +229,17 @@ def _collect(proc: subprocess.Popen, timeout: int) -> str:
 
         ev_type = ev.get("type")
 
-        if ev_type == "agent_end":
+        # Accumulate streaming text deltas
+        if ev_type == "message_update":
+            delta = ev.get("assistantMessageEvent", {})
+            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                d = delta.get("delta", {})
+                if isinstance(d, dict):
+                    streaming_parts.append(d.get("text", ""))
+
+        elif ev_type == "agent_end":
+            # Prefer final messages if they contain JSON
+            final_parts: list[str] = []
             for msg in ev.get("messages", []):
                 if msg.get("role") != "assistant":
                     continue
@@ -234,11 +247,22 @@ def _collect(proc: subprocess.Popen, timeout: int) -> str:
                 if isinstance(content, list):
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
-                            text_parts.append(part.get("text", ""))
+                            final_parts.append(part.get("text", ""))
                 elif isinstance(content, str):
-                    text_parts.append(content)
-            return "\n".join(text_parts).strip()
+                    final_parts.append(content)
+            final = "\n".join(final_parts).strip()
+            # Use final messages if they contain JSON, else use streaming accumulation
+            if final and "{" in final:
+                return final
+            accumulated = "".join(streaming_parts)
+            if accumulated and "{" in accumulated:
+                return accumulated
+            return final or accumulated
 
+    # Timeout — try streaming buffer
+    accumulated = "".join(streaming_parts)
+    if accumulated and "{" in accumulated:
+        return accumulated
     raise RuntimeError(f"pi_xray: timed out after {timeout}s")
 
 
