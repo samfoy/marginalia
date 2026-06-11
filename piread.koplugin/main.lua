@@ -425,10 +425,12 @@ function PiRead:showChatDialog()
 
     local dialog
     dialog = InputDialog:new{
-        title      = _("Ask Pi"),
-        input      = "",
-        input_hint = _("What's happening? Who is this? What did I miss?"),
-        input_type = "string",
+        title           = _("Ask Pi"),
+        input           = "",
+        input_hint      = _("What's happening? Who is this? What did I miss?"),
+        input_type      = "text",
+        input_multiline = true,
+        allow_newline   = false,
         buttons = {{
             {
                 text = _("Cancel"),
