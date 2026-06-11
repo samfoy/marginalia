@@ -547,9 +547,34 @@ def _chunked(content: EpubContent) -> dict:
 def generate(content: EpubContent) -> dict:
     """
     Generate a complete X-Ray for a book.
-    Returns a normalized xray dict ready to embed in a cache record.
-    Raises on unrecoverable failure.
+    Uses pi (with tools) if epub_path is available, otherwise falls back
+    to direct Bedrock generation.
+    Returns (xray_dict, strategy_name).
     """
+    # ── Pi-based generation (preferred) ──────────────────────────────────────
+    if content.epub_path and os.path.exists(content.epub_path):
+        try:
+            from pi_xray import generate as pi_generate
+            xray, strategy = pi_generate(
+                epub_path=content.epub_path,
+                title=content.title or "Unknown",
+                author=content.author or "Unknown",
+                reading_pct=100.0,
+            )
+            xray = _normalize(xray)
+            logger.info(
+                "pi_xray Generated X-Ray: %d characters | %d locations | %d terms | %d hist_figs | %d timeline_events",
+                len(xray.get("characters", [])),
+                len(xray.get("locations", [])),
+                len(xray.get("terms", [])),
+                len(xray.get("historical_figures", [])),
+                len(xray.get("timeline", [])),
+            )
+            return xray, strategy
+        except Exception as e:
+            logger.warning("pi_xray failed (%s), falling back to direct generation", e)
+
+    # ── Bedrock fallback (knowledge-only or pi unavailable) ───────────────────
     if content.total_chars <= SINGLE_SHOT_LIMIT:
         xray = _single_shot(content)
         strategy = "single_shot"
