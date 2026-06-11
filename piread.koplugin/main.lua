@@ -40,7 +40,7 @@ local PiRead = WidgetContainer:extend{
 }
 
 local SETTINGS_KEY   = "piread"
-local POLL_INTERVAL  = 30    -- seconds between status polls
+local POLL_INTERVAL  = 10    -- seconds between status polls during X-Ray generation
 local PROGRESS_EVERY = 5     -- report reading position every N% change
 
 local DEFAULT_SETTINGS = {

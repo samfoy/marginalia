@@ -27,6 +27,7 @@ import sys
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 
 import boto3
@@ -491,6 +492,11 @@ class Handler(BaseHTTPRequestHandler):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTPServer with per-request threads — /ask never blocks X-Ray generation."""
+    daemon_threads = True
+
+
 def main():
     log_file = os.path.expanduser("~/Library/Logs/piread-bridge.log")
     logging.basicConfig(
@@ -502,7 +508,7 @@ def main():
         ],
     )
 
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     logging.info("piread-bridge listening on :%d  model=%s  profile=%s", PORT, MODEL_ID, PROFILE)
 
     # Warm up the pi session in a background thread so the first /chat is fast

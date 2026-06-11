@@ -13,6 +13,8 @@ Filtering to the reader's current position happens at serve-time, not here.
 import json
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -26,10 +28,13 @@ logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-PROFILE    = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
-REGION     = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
-MODEL_ID   = os.environ.get("PIREAD_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
-MAX_TOKENS = int(os.environ.get("PIREAD_XRAY_MAX_TOKENS", "16384"))
+PROFILE           = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
+REGION            = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
+MODEL_ID          = os.environ.get("PIREAD_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+# Haiku for chunk/pass extraction — faster + cheaper; Sonnet only for single-shot
+CHUNK_MODEL_ID    = os.environ.get("PIREAD_CHUNK_MODEL_ID", "us.anthropic.claude-haiku-3-5")
+MAX_TOKENS        = int(os.environ.get("PIREAD_XRAY_MAX_TOKENS", "16384"))
+MAX_PARALLEL_CHUNKS = int(os.environ.get("PIREAD_MAX_PARALLEL_CHUNKS", "4"))
 
 # Large context requests can take several minutes
 _BEDROCK_CONFIG = BotocoreConfig(
@@ -117,16 +122,24 @@ def _chunk_prompt(title: str, author: str, section_text: str,
 
 # ── Bedrock client ─────────────────────────────────────────────────────────────
 
+# ── Cached Bedrock client (thread-safe, one session for the lifetime of the process) ──
+_client_lock   = threading.Lock()
+_cached_client = None
+
+
 def _client():
-    return boto3.Session(profile_name=PROFILE, region_name=REGION).client(
-        "bedrock-runtime", config=_BEDROCK_CONFIG
-    )
+    global _cached_client
+    if _cached_client is None:
+        with _client_lock:
+            if _cached_client is None:
+                _cached_client = boto3.Session(
+                    profile_name=PROFILE, region_name=REGION
+                ).client("bedrock-runtime", config=_BEDROCK_CONFIG)
+    return _cached_client
 
 
-def _call(prompt: str) -> str:
+def _call(prompt: str, model_id: str = MODEL_ID) -> str:
     """Make a Bedrock call. Returns raw response text."""
-    # Note: Bedrock does not support assistant-role prefill.
-    # We rely on the system prompt + explicit JSON instruction instead.
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": MAX_TOKENS,
@@ -135,8 +148,8 @@ def _call(prompt: str) -> str:
             {"role": "user", "content": prompt},
         ],
     }
-    resp   = _client().invoke_model(
-        modelId=MODEL_ID,
+    resp = _client().invoke_model(
+        modelId=model_id,
         body=json.dumps(body),
         contentType="application/json",
         accept="application/json",
@@ -470,38 +483,45 @@ def _single_shot(content: EpubContent) -> dict:
 
 
 def _two_pass(content: EpubContent) -> dict:
-    logger.info("Strategy: two_pass (%d chars, %d chapters)",
+    logger.info("Strategy: two_pass (%d chars, %d chapters) — parallel",
                 content.total_chars, len(content.chapters))
     first_half, second_half = _split_chapters_at(content.chapters, 50.0)
     split_pct = second_half[0].position_pct if second_half else 50.0
     logger.info("  split at %.0f%% (%d + %d chapters)",
                 split_pct, len(first_half), len(second_half))
 
-    results:     list[dict] = []
-    known_names: list[str]  = []
     tag = _series_tag(content)
 
-    for i, half in enumerate([first_half, second_half]):
-        if not half:
-            continue
-        s = half[0].position_pct
-        e = second_half[0].position_pct if i == 0 and second_half else 100.0
+    def _run_half(half: list, s: float, e: float) -> dict:
         text, n = _annotated_text(half)
-        logger.info("  pass %d: %.0f%%–%.0f%% (%d chars)", i + 1, s, e, n)
-        prompt = _chunk_prompt(content.title, content.author, text, s, e, known_names, tag)
-        try:
-            xray = _normalize(_parse(_call(prompt)))
-            results.append(xray)
-            known_names.extend(c["name"] for c in xray["characters"])
-        except Exception as exc:
-            logger.warning("  pass %d failed: %s", i + 1, exc)
+        logger.info("  half %.0f%%–%.0f%% (%d chars)", s, e, n)
+        prompt = _chunk_prompt(content.title, content.author, text, s, e, None, tag)
+        return _normalize(_parse(_call(prompt, model_id=CHUNK_MODEL_ID)))
+
+    halves = []
+    if first_half:
+        halves.append((first_half,
+                       first_half[0].position_pct,
+                       second_half[0].position_pct if second_half else 100.0))
+    if second_half:
+        halves.append((second_half, second_half[0].position_pct, 100.0))
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = {ex.submit(_run_half, h, s, e): i for i, (h, s, e) in enumerate(halves)}
+        for fut in as_completed(futures):
+            i = futures[fut]
+            try:
+                results.append(fut.result())
+            except Exception as exc:
+                logger.warning("  pass %d failed: %s", i + 1, exc)
 
     return _merge(results)
 
 
 def _chunked(content: EpubContent) -> dict:
-    logger.info("Strategy: chunked (%d chars, %d chapters)",
-                content.total_chars, len(content.chapters))
+    logger.info("Strategy: chunked (%d chars, %d chapters) — parallel (max %d workers)",
+                content.total_chars, len(content.chapters), MAX_PARALLEL_CHUNKS)
 
     # Group chapters into ~CHUNK_SIZE char blobs
     groups: list[tuple[list[Chapter], float, float]] = []
@@ -521,25 +541,30 @@ def _chunked(content: EpubContent) -> dict:
     if buf:
         groups.append((buf, buf[0].position_pct, 100.0))
 
-    logger.info("  %d chunk groups", len(groups))
-
-    results:     list[dict] = []
-    known_names: list[str]  = []
+    n_groups = len(groups)
+    logger.info("  %d chunk groups", n_groups)
     tag = _series_tag(content)
 
-    for i, (chapters, s, e) in enumerate(groups):
+    def _run_chunk(i: int, chapters: list, s: float, e: float) -> dict:
         text, n = _annotated_text(chapters)
-        logger.info("  chunk %d/%d (%.0f%%–%.0f%%, %d chars)",
-                    i + 1, len(groups), s, e, n)
-        prompt = _chunk_prompt(content.title, content.author, text, s, e, known_names, tag)
-        try:
-            xray = _normalize(_parse(_call(prompt)))
-            results.append(xray)
-            known_names.extend(c["name"] for c in xray["characters"])
-        except Exception as exc:
-            logger.warning("  chunk %d failed: %s", i + 1, exc)
+        logger.info("  chunk %d/%d (%.0f%%–%.0f%%, %d chars)", i + 1, n_groups, s, e, n)
+        prompt = _chunk_prompt(content.title, content.author, text, s, e, None, tag)
+        return _normalize(_parse(_call(prompt, model_id=CHUNK_MODEL_ID)))
 
-    return _merge(results)
+    results: list[dict | None] = [None] * n_groups
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_CHUNKS) as ex:
+        future_to_idx = {
+            ex.submit(_run_chunk, i, chapters, s, e): i
+            for i, (chapters, s, e) in enumerate(groups)
+        }
+        for fut in as_completed(future_to_idx):
+            i = future_to_idx[fut]
+            try:
+                results[i] = fut.result()
+            except Exception as exc:
+                logger.warning("  chunk %d/%d failed: %s", i + 1, n_groups, exc)
+
+    return _merge([r for r in results if r is not None])
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
