@@ -333,35 +333,50 @@ end
 -- ── Ask Pi about this chapter ─────────────────────────────────────────────────
 
 function Context._askAboutChapter(chapter_text, chapter_title, ui, bridge)
-    -- Use a reasonable excerpt — first ~1500 chars is enough context
     local excerpt = chapter_text:sub(1, 1500):gsub("\n+", " "):gsub("%s+", " ")
 
     local props = ui and ui.document and ui.document:getProps()
     local book_title  = (props and props.title)   or ""
     local book_author = (props and props.authors) or ""
 
-    local loading = InfoMessage:new{ text = _("Asking Pi…"), timeout = 30 }
-    UIManager:show(loading)
-    UIManager:scheduleIn(0.1, function()
-        local response, err = bridge:ask({
-            text        = excerpt,
-            book_title  = book_title ~= "" and book_title  or nil,
-            book_author = book_author ~= "" and book_author or nil,
-            mode        = "summarize",
-            context     = chapter_title and ("Current chapter: " .. chapter_title) or nil,
-        })
-        UIManager:close(loading)
-        if err then
-            UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 5 })
-            return
-        end
+    local dots   = { ".", "..", "..." }
+    local didx   = 1
+    local dtask  = nil
+    local dclosed = false
+    local dialog = InfoMessage:new{ text = _("Asking Pi.") }
+    UIManager:show(dialog)
+    local function dtick()
+        if dclosed then return end
+        didx = (didx % #dots) + 1
+        dtask = UIManager:scheduleIn(0.8, dtick)
+    end
+    dtask = UIManager:scheduleIn(0.8, dtick)
+    local function close_loading()
+        if dclosed then return end
+        dclosed = true
+        if dtask then UIManager:unschedule(dtask) end
+        UIManager:close(dialog)
+    end
+
+    bridge:askAsync({
+        text        = excerpt,
+        book_title  = book_title ~= "" and book_title  or nil,
+        book_author = book_author ~= "" and book_author or nil,
+        mode        = "summarize",
+        context     = chapter_title and ("Current chapter: " .. chapter_title) or nil,
+    }, function(response)
+        close_loading()
         UIManager:show(TextViewer:new{
             title  = chapter_title and T(_("Pi on %1"), chapter_title) or _("Pi summary"),
             text   = response,
             width  = math.floor(Screen:getWidth()  * 0.92),
             height = math.floor(Screen:getHeight() * 0.78),
         })
+    end, function(err)
+        close_loading()
+        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 5 })
     end)
 end
+
 
 return Context
