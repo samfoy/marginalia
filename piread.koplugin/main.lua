@@ -383,6 +383,49 @@ function PiRead:hookHighlightDialog()
             end,
         }
     end)
+
+    -- ── Save to note (with optional context) ───────────────────────────────
+    self.ui.highlight:addToHighlightDialog("12_pi_save_note", function(this)
+        local s = self:loadSettings()
+        if not s.enabled then return nil end
+
+        return {
+            text = _("Pi: Save Note"),
+            callback = function()
+                local sel = this.selected_text
+                if not (sel and sel.text and sel.text ~= "") then return end
+
+                local highlight_text = util.cleanupSelectedText(sel.text)
+
+                -- Show optional context input dialog
+                local dialog
+                dialog = InputDialog:new{
+                    title       = _("Add context (optional)"),
+                    input       = "",
+                    input_hint  = _("Your thought, question, or tag…"),
+                    input_type  = "text",
+                    buttons = {{
+                        {
+                            text     = _("Cancel"),
+                            id       = "close",
+                            callback = function() UIManager:close(dialog) end,
+                        },
+                        {
+                            text             = _("Save"),
+                            is_enter_default = true,
+                            callback         = function()
+                                local user_context = dialog:getInputText() or ""
+                                UIManager:close(dialog)
+                                this:onClose()
+                                self:saveHighlightNote(highlight_text, user_context)
+                            end,
+                        },
+                    }},
+                }
+                UIManager:show(dialog)
+            end,
+        }
+    end)
 end
 
 -- ── Mode picker ───────────────────────────────────────────────────────────────
@@ -445,6 +488,34 @@ function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mod
         logger.warn("piread ask:", err)
         UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
     end)
+end
+
+-- ── Save highlight + optional context as KOReader book note ────────────────────
+
+function PiRead:saveHighlightNote(highlight_text, user_context)
+    -- Build the note text: highlight + optional user context
+    local note_lines = {}
+    table.insert(note_lines, "— " .. highlight_text)
+    if user_context and user_context:match("%S") then
+        table.insert(note_lines, "")
+        table.insert(note_lines, user_context)
+    end
+    local note_text = table.concat(note_lines, "\n")
+
+    -- KOReader's highlight:addNote(text) saves the current selected_text
+    -- as a highlight and opens the edit-note dialog pre-filled with text.
+    -- It must be called while selected_text is still set on ui.highlight.
+    local ok, err = pcall(function()
+        self.ui.highlight:addNote(note_text)
+    end)
+
+    if not ok then
+        logger.warn("piread saveHighlightNote:", err)
+        UIManager:show(InfoMessage:new{
+            text    = _("Pi: could not save note"),
+            timeout = 4,
+        })
+    end
 end
 
 function PiRead:showChatDialog()
