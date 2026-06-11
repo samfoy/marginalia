@@ -452,7 +452,7 @@ function PiRead:showChatDialog()
     UIManager:show(dialog)
 end
 
-
+function PiRead:chatBridge(question, book_title, book_author, reading_pct)
     local close_loading = self:showLoadingAnim(_("Asking Pi"))
     local page_text = self:getCurrentPageText(2500)
 
