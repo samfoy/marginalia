@@ -230,7 +230,7 @@ local function section_items(title, entities, kind, reading_pct)
 end
 
 
-function Context.show(ui, xray, bridge, reading_pct)
+function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform)
     -- Extract current chapter text
     local text, chapter_title, chapter_pct = Context.getCurrentChapterText(ui)
 
@@ -310,6 +310,16 @@ function Context.show(ui, xray, bridge, reading_pct)
                 Context._askAboutChapter(text, chapter_title, ui, bridge)
             end,
         }
+        if on_ask_freeform then
+            items[#items+1] = {
+                text      = _("Ask Pi anything\226\128\166"),
+                mandatory = _("Type your question"),
+                callback  = function()
+                    UIManager:close(Context._menu)
+                    on_ask_freeform()
+                end,
+            }
+        end
     end
 
     local chap_label = chapter_title

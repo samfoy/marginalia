@@ -96,7 +96,7 @@ function PiRead:onPiReadNowReading()
     local s = self:loadSettings()
     if not s.enabled then return end
     local pct = s.spoiler_free and self:currentReadingPct() or nil
-    Context.show(self.ui, self._xray, Bridge, pct)
+    Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end)
 end
 
 function PiRead:onReaderReady()
@@ -446,7 +446,7 @@ end
 function PiRead:addToMainMenu(menu_items)
     menu_items.piread = {
         text         = _("Pi reading assistant"),
-        sorting_hint = "more_tools",
+        sorting_hint = "tools",
         sub_item_table = self:buildMenu(),
     }
 end
@@ -464,7 +464,7 @@ function PiRead:buildMenu()
                 return
             end
             local pct = s.spoiler_free and self:currentReadingPct() or nil
-            Context.show(self.ui, self._xray, Bridge, pct)
+            Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end)
         end,
     })
 
