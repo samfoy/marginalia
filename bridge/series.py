@@ -139,10 +139,13 @@ def _merge_from_prior(
                         enriched += 1
                     break
         else:
-            # Not yet known — import with source tag
+            # Not yet known — import with source tag. These come from books the
+            # reader has finished, so they are KNOWN: force first_appearance_pct
+            # to 0 so the current-book spoiler filter never hides them.
             copy = deepcopy(prior_entity)
             copy["source_book"]  = source_label
             copy["source_label"] = f"From {source_label}"
+            copy["first_appearance_pct"] = 0
             current.append(copy)
             current_keys.add(key)
             added += 1

@@ -358,6 +358,23 @@ def _run_knowledge_xray_job(job_id: str, title: str, author: str) -> None:
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
+def _serve_xray(record: dict) -> dict:
+    """Return a book's X-Ray for serving, with prior-series-book entities merged
+    in (so the X-Ray browser shows characters carried over from earlier books).
+    Injected entities are tagged source_label and never spoiler-gated."""
+    import copy as _copy
+    xray = record.get("xray", {})
+    book = record.get("book", {})
+    s, si = book.get("series"), book.get("series_index")
+    if not (s and si and si > 1):
+        return xray
+    try:
+        return series.inject_series_context(_copy.deepcopy(xray), s, si)
+    except Exception:
+        logging.exception("series inject failed (non-fatal)")
+        return xray
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # redirect to Python logging
         logging.info("HTTP %s", fmt % args)
@@ -388,7 +405,7 @@ class Handler(BaseHTTPRequestHandler):
                     "progress": job.get("progress", ""),
                     "error": job.get("error")}
             if job["status"] == "ready" and job.get("record"):
-                resp["xray"] = job["record"]["xray"]
+                resp["xray"] = _serve_xray(job["record"])
                 resp["book"] = job["record"]["book"]
                 resp["mentions"] = job["record"].get("mentions", {})
             self._send_json(200, resp)
@@ -700,7 +717,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"status": "current"})
                 return
             self._send_json(200, {"status": "ready", "cached": True,
-                                   "xray": cached["xray"], "book": cached["book"],
+                                   "xray": _serve_xray(cached), "book": cached["book"],
                                    "mentions": cached.get("mentions", {}),
                                    "generated_at": mac_generated_at})
             return
