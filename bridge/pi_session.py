@@ -22,9 +22,11 @@ log = logging.getLogger("piread.pi_session")
 PI_BIN = os.environ.get("PIREAD_PI_BIN", "pi")
 
 # Model — default to whatever the bridge uses, override with env
-# pi --model uses pi's provider/model format; bedrock-mantle not supported here
-# so /chat stays on bedrock Sonnet — fast enough for short conversational queries
-PI_MODEL = os.environ.get("PIREAD_PI_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
+# pi --model uses pi's provider/model format.
+# bedrock-mantle is loaded explicitly so GPT-5.5 is available without
+# enabling full extension discovery.
+PI_MODEL    = os.environ.get("PIREAD_PI_MODEL", "bedrock-mantle/openai.gpt-5.5")
+PI_EXT_PATH = os.environ.get("PIREAD_PI_EXT", str(Path.home() / "Projects/pi-bedrock-mantle"))
 
 # System prompt: tight reading-assistant identity, no tool preamble needed
 SYSTEM_PROMPT = (
@@ -69,7 +71,8 @@ class PiSession:
             "--mode", "rpc",
             "--no-session",          # ephemeral — no history between calls
             "--no-context-files",    # skip AGENTS.md / CLAUDE.md discovery
-            "--no-extensions",       # no extension loading overhead
+            "--no-extensions",       # block full discovery; load only what we need
+            "-e", PI_EXT_PATH,       # load bedrock-mantle for GPT-5.5 support
             "--no-skills",           # no skills loading overhead
             "--no-prompt-templates", # skip prompts dir
             "--no-themes",           # skip themes dir
