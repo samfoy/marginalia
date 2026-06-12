@@ -43,6 +43,8 @@ from epub_extract import extract_epub
 from xray_generator import generate, build_record
 import xray_cache
 import pi_session
+import mentions
+import rag
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -95,6 +97,34 @@ DEFAULT_SYSTEM = (
     "You are a helpful reading assistant embedded in KOReader. "
     "Answer the user's question about the selected text concisely. "
     "Plain text only — no markdown. Keep responses under 250 words."
+)
+
+# Spoiler-bounded companion prompts (recap / AI Wiki / section) — all grounded
+# in retrieved excerpts that come ONLY from before the reader's position.
+RECAP_INSTRUCTIONS = (
+    "You are a reading companion. The reader is returning to a book after a break. "
+    "Using ONLY the provided excerpts and events — all from BEFORE their current "
+    "position — write a brief 'where you left off' recap: the immediate situation, "
+    "who is involved, and the most recent significant developments. "
+    "5–8 sentences, plain prose, no markdown. Do not state anything not supported "
+    "by the excerpts, and never reference events past the reader's position."
+)
+WIKI_INSTRUCTIONS = (
+    "You are a reading companion writing a spoiler-safe encyclopedia entry about a "
+    "specific person, place, term, or reference from a book, bounded to what the "
+    "reader has seen so far. Use ONLY the provided excerpts (all from before the "
+    "reader's current position). Cover who/what it is, why it matters, and key "
+    "relationships or moments SO FAR. 5–10 sentences, plain prose, no markdown. "
+    "Do not reveal or hint at anything beyond the reader's position. If little is "
+    "known yet, say so briefly."
+)
+SECTION_INSTRUCTIONS = (
+    "You are a reading companion analyzing one chapter/section the reader has just "
+    "finished. Using ONLY the provided excerpts from that section, explain what "
+    "matters: the key events, who appears, important reveals, and what to keep in "
+    "mind going forward. Be concrete and specific. 5–9 sentences, plain prose, no "
+    "markdown. Do not reference anything outside this section or past the reader's "
+    "position."
 )
 
 # ── Bedrock client ────────────────────────────────────────────────────────────
@@ -222,21 +252,33 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
         update("extracting", progress="Extracting EPUB text")
         content = extract_epub(book_meta["epub_path"])
 
-        chars = content.total_chars
-        if chars <= 560_000:
-            strat = "single_shot"
-        elif chars <= 1_600_000:
-            strat = "two_pass"
-        else:
-            strat = "chunked"
         update("generating",
-               progress=f"Generating X-Ray via {strat} ({chars:,} chars)")
+               progress=f"Generating X-Ray ({content.total_chars:,} chars)")
 
         xray, strategy = generate(content)
+
+        # Build the per-entity mention index (chapter distribution + jump-to).
+        # Pure regex over chapter text — fast, no network.
+        try:
+            mention_idx = mentions.build_mentions(content, xray)
+            mentions.add_mention_counts(xray, mention_idx)
+        except Exception:
+            logging.exception("mentions build failed (non-fatal)")
+            mention_idx = {}
+
         record = build_record(content, book_meta, xray, strategy)
+        record["mentions"] = mention_idx
         if reading_pct:
             record["last_reading_pct"] = reading_pct
         xray_cache.save(content.file_hash, record)
+
+        # Build the retrieval index (embeddings sidecar) so /chat, /recap,
+        # /wiki, /section can ground answers in the actual prose. Non-fatal.
+        try:
+            rag.build_index(content, content.file_hash)
+        except Exception:
+            logging.exception("rag index build failed (non-fatal)")
+
         update("ready", record=record, error=None)
         logging.info("X-Ray job %s complete: %s", job_id, title)
 
@@ -335,6 +377,7 @@ class Handler(BaseHTTPRequestHandler):
             if job["status"] == "ready" and job.get("record"):
                 resp["xray"] = job["record"]["xray"]
                 resp["book"] = job["record"]["book"]
+                resp["mentions"] = job["record"].get("mentions", {})
             self._send_json(200, resp)
         else:
             self.send_error(404)
@@ -349,6 +392,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/chat":
             self._handle_chat()
+            return
+        if self.path == "/recap":
+            self._handle_recap()
+            return
+        if self.path == "/wiki":
+            self._handle_wiki()
+            return
+        if self.path == "/section":
+            self._handle_section()
             return
         if self.path == "/note":
             self._handle_note()
@@ -436,7 +488,14 @@ class Handler(BaseHTTPRequestHandler):
             ctx_parts.append(xray_summary)
         if page_text:
             ctx_parts.append(f"Current page text:\n{page_text}")
-        book_context = "\n".join(ctx_parts)
+
+        # Ground the answer in actual prose the reader has already seen.
+        rag_ctx = self._rag_context(book_title, book_author, question, reading_pct, k=6)
+        if rag_ctx:
+            ctx_parts.append(
+                "Relevant passages from earlier in the book (already read):\n" + rag_ctx
+            )
+        book_context = "\n\n".join(ctx_parts)
 
         try:
             session = pi_session.get_session()
@@ -444,6 +503,151 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"response": response_text, "error": None})
         except Exception as exc:
             logging.exception("pi_session /chat error")
+            self._send_json(500, {"response": None, "error": str(exc)})
+
+    # ── RAG helpers (position-bounded retrieval) ──────────────────────────────
+    def _book_hash(self, title: str, author: str) -> str | None:
+        rec = xray_cache.find_by_title_author(title, author)
+        if not rec and author:
+            rec = xray_cache.find_by_title_author(title, "")
+        if rec:
+            return rec.get("book", {}).get("epub_hash")
+        return None
+
+    def _rag_context(self, title: str, author: str, query: str,
+                     reading_pct, k: int = 6, max_chars: int = 6000) -> str:
+        try:
+            h = self._book_hash(title, author)
+            if not h or not rag.has_index(h):
+                return ""
+            hits = rag.retrieve(h, query, float(reading_pct or 0), k=k)
+            return rag.context_block(hits, max_chars=max_chars)
+        except Exception:
+            logging.exception("rag context lookup failed (non-fatal)")
+            return ""
+
+    def _gpt_companion(self, instructions: str, user_message: str) -> str:
+        from xray_generator import _call_gpt
+        return _call_gpt(user_message, model_id=MODEL_ID, instructions=instructions).strip()
+
+    # ── /recap — spoiler-bounded "where you left off" ─────────────────────────
+    def _handle_recap(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON"); return
+
+        title       = (req.get("book_title") or "").strip()
+        author      = (req.get("book_author") or "").strip()
+        reading_pct = float(req.get("reading_pct") or 0)
+        if not title:
+            self.send_error(400, "Missing book_title"); return
+
+        parts = [f'Book: "{title}"' + (f" by {author}" if author else "")
+                 + f" — reader is at {reading_pct:.0f}%."]
+
+        # Timeline events the reader has reached (from cached X-Ray)
+        rec = xray_cache.find_by_title_author(title, author) or \
+              (xray_cache.find_by_title_author(title, "") if author else None)
+        if rec:
+            events = [e for e in rec.get("xray", {}).get("timeline", [])
+                      if (e.get("position_pct") or 0) <= reading_pct]
+            if events:
+                recent = events[-10:]
+                lines = [f"- {e.get('chapter','?')}: {e.get('event','')}" for e in recent]
+                parts.append("Recent plot events (chronological):\n" + "\n".join(lines))
+
+        rag_ctx = self._rag_context(
+            title, author,
+            "the most recent events, the current situation, and where the "
+            "protagonist is right now",
+            reading_pct, k=8, max_chars=7000)
+        if rag_ctx:
+            parts.append("Excerpts from the pages just read:\n" + rag_ctx)
+
+        try:
+            text = self._gpt_companion(RECAP_INSTRUCTIONS, "\n\n".join(parts))
+            self._send_json(200, {"response": text, "error": None})
+        except Exception as exc:
+            logging.exception("/recap error")
+            self._send_json(500, {"response": None, "error": str(exc)})
+
+    # ── /wiki — AI Wiki deep-dive on one entity, bounded to position ──────────
+    def _handle_wiki(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON"); return
+
+        title       = (req.get("book_title") or "").strip()
+        author      = (req.get("book_author") or "").strip()
+        entity      = (req.get("entity_name") or "").strip()
+        kind        = (req.get("entity_kind") or "").strip() or "subject"
+        known       = (req.get("known") or "").strip()
+        reading_pct = float(req.get("reading_pct") or 0)
+        if not title or not entity:
+            self.send_error(400, "Missing book_title or entity_name"); return
+
+        parts = [f'Book: "{title}"' + (f" by {author}" if author else "")
+                 + f" — reader is at {reading_pct:.0f}%.",
+                 f"Write the entry about this {kind}: {entity}"]
+        if known:
+            parts.append(f"What the X-Ray already notes: {known}")
+
+        rag_ctx = self._rag_context(
+            title, author,
+            f"{entity} — who/what they are, their role, significance, and relationships",
+            reading_pct, k=8, max_chars=7000)
+        if rag_ctx:
+            parts.append(f"Excerpts mentioning {entity} (already read):\n" + rag_ctx)
+
+        try:
+            text = self._gpt_companion(WIKI_INSTRUCTIONS, "\n\n".join(parts))
+            self._send_json(200, {"response": text, "error": None})
+        except Exception as exc:
+            logging.exception("/wiki error")
+            self._send_json(500, {"response": None, "error": str(exc)})
+
+    # ── /section — Section X-Ray for one chapter/part ─────────────────────────
+    def _handle_section(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON"); return
+
+        title       = (req.get("book_title") or "").strip()
+        author      = (req.get("book_author") or "").strip()
+        chapter     = (req.get("chapter_title") or "").strip()
+        start_pct   = float(req.get("start_pct") or 0)
+        end_pct     = float(req.get("end_pct") or 100)
+        if not title:
+            self.send_error(400, "Missing book_title"); return
+
+        h = self._book_hash(title, author)
+        if not h or not rag.has_index(h):
+            self._send_json(200, {"response": None,
+                                  "error": "Section analysis needs the retrieval "
+                                           "index — rebuild X-Ray for this book."})
+            return
+
+        chunks = rag.section_chunks(h, start_pct, end_pct, max_chars=7000)
+        if not chunks:
+            self._send_json(200, {"response": None,
+                                  "error": "No text found for this section."})
+            return
+
+        label = chapter or f"{start_pct:.0f}%–{end_pct:.0f}%"
+        body = (f'Book: "{title}"' + (f" by {author}" if author else "")
+                + f"\nSection: {label} ({start_pct:.0f}%–{end_pct:.0f}%)\n\n"
+                + "Section text:\n" + rag.context_block(chunks, max_chars=7000))
+        try:
+            text = self._gpt_companion(SECTION_INSTRUCTIONS, body)
+            self._send_json(200, {"response": text, "error": None})
+        except Exception as exc:
+            logging.exception("/section error")
             self._send_json(500, {"response": None, "error": str(exc)})
 
     # ── /xray/init ────────────────────────────────────────────────────────────
@@ -475,6 +679,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, {"status": "ready", "cached": True,
                                    "xray": cached["xray"], "book": cached["book"],
+                                   "mentions": cached.get("mentions", {}),
                                    "generated_at": mac_generated_at})
             return
 

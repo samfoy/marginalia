@@ -8,9 +8,11 @@ X-Ray cache. Entirely offline — no network calls.
 local BD            = require("ui/bidi")
 local ButtonDialog  = require("ui/widget/buttondialog")
 local Device        = require("device")
+local Event         = require("ui/event")
 local Font          = require("ui/font")
 local InfoMessage   = require("ui/widget/infomessage")
 local Menu          = require("ui/widget/menu")
+local NetworkMgr    = require("ui/network/manager")
 local Screen = require("device").screen
 local TextViewer    = require("ui/widget/textviewer")
 local UIManager     = require("ui/uimanager")
@@ -46,6 +48,161 @@ local function is_spoiler(item, reading_pct)
 end
 
 
+-- ── Live context (set by main.lua before showing X-Ray) ───────────────────────
+-- Holds {bridge, ui, book_title, book_author, reading_pct, mentions} so entity
+-- detail views can offer "Tell me more" (AI Wiki) and "Where appears" (jump).
+XRayUI._ctx = nil
+
+function XRayUI.setContext(ctx)
+    XRayUI._ctx = ctx
+end
+
+-- Animated "Asking Pi…" indicator. Returns close().
+local function show_loading(label)
+    local base, dots, idx, closed, task = label or _("Asking Pi"), { ".", "..", "..." }, 1, false, nil
+    local dialog = InfoMessage:new{ text = base .. dots[idx] }
+    UIManager:show(dialog)
+    local function tick()
+        if closed then return end
+        idx = (idx % #dots) + 1
+        if dialog.text_widget then
+            pcall(function() dialog.text_widget:setText(base .. dots[idx]) end)
+        end
+        task = UIManager:scheduleIn(0.8, tick)
+    end
+    task = UIManager:scheduleIn(0.8, tick)
+    return function()
+        if closed then return end
+        closed = true
+        if task then UIManager:unschedule(task) end
+        UIManager:close(dialog)
+    end
+end
+
+-- Close every open X-Ray widget (used before navigating into the book).
+function XRayUI._closeAll()
+    for _, key in ipairs({ "_mentions_menu", "_detail", "_list_menu", "_menu" }) do
+        local w = XRayUI[key]
+        if w then pcall(function() UIManager:close(w) end) end
+        XRayUI[key] = nil
+    end
+end
+
+-- Jump to the chapter where an entity is mentioned.
+function XRayUI._goto(ui, chapter, pct)
+    if not (ui and ui.document) then return end
+    XRayUI._closeAll()
+    local page
+    local ok_toc, toc = pcall(function() return ui.document:getToc() end)
+    if ok_toc and toc then
+        for _, t in ipairs(toc) do
+            if t.title == chapter then page = t.page; break end
+        end
+    end
+    if not page then
+        local total = (ui.document.getPageCount and ui.document:getPageCount()) or 1
+        page = math.max(1, math.floor((tonumber(pct) or 0) / 100 * total))
+    end
+    pcall(function() if ui.link then ui.link:addCurrentLocationToStack() end end)
+    pcall(function() ui:handleEvent(Event:new("GotoPage", page)) end)
+end
+
+-- List every chapter an entity appears in; tap to jump there.
+function XRayUI._showMentions(entity, mlist)
+    local ctx = XRayUI._ctx or {}
+    local items = {}
+    for _, m in ipairs(mlist or {}) do
+        items[#items+1] = {
+            text      = string.format("%s (%d%%)", m.chapter or "?", math.floor(m.position_pct or 0)),
+            mandatory = (m.snippet or ""):sub(1, 30),
+            callback  = function() XRayUI._goto(ctx.ui, m.chapter, m.position_pct) end,
+        }
+    end
+    if #items == 0 then
+        UIManager:show(InfoMessage:new{ text = _("No mentions recorded."), timeout = 3 })
+        return
+    end
+    XRayUI._mentions_menu = Menu:new{
+        title          = T(_("%1 — appears in"), entity.name),
+        item_table     = items,
+        is_borderless  = true,
+        width          = Screen:getWidth(),
+        height         = Screen:getHeight(),
+        single_line    = true,
+        onMenuSelect   = function(_, item) item.callback() end,
+        close_callback = function(menu) UIManager:close(menu) end,
+    }
+    UIManager:show(XRayUI._mentions_menu)
+end
+
+-- AI Wiki: spoiler-bounded deep-dive on one entity via the bridge.
+function XRayUI._wikiLookup(entity, kind)
+    local ctx = XRayUI._ctx or {}
+    if not (ctx.bridge and ctx.book_title) then
+        UIManager:show(InfoMessage:new{ text = _("Open the book first."), timeout = 3 })
+        return
+    end
+    if NetworkMgr and not NetworkMgr:isConnected() then
+        UIManager:show(InfoMessage:new{ text = _("Not connected — Tell me more needs the bridge."), timeout = 4 })
+        return
+    end
+    local known = entity.description or entity.definition or entity.biography
+                  or entity.context_in_book or ""
+    local close_loading = show_loading(_("Asking Pi"))
+    ctx.bridge:wikiAsync({
+        book_title  = ctx.book_title,
+        book_author = ctx.book_author,
+        entity_name = entity.name,
+        entity_kind = kind,
+        known       = known,
+        reading_pct = ctx.reading_pct,
+    }, function(text)
+        close_loading()
+        UIManager:show(TextViewer:new{
+            title  = entity.name,
+            text   = text,
+            width  = math.floor(Screen:getWidth()  * 0.92),
+            height = math.floor(Screen:getHeight() * 0.82),
+        })
+    end, function(err)
+        close_loading()
+        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 5 })
+    end)
+end
+
+-- Entity detail with optional action buttons (Tell me more / Where appears).
+local function entity_viewer(title, lines, entity, kind)
+    local ctx = XRayUI._ctx or {}
+    local row = {}
+    local mlist = nil
+    if ctx.mentions and entity and entity.name then
+        mlist = ctx.mentions[entity.name:lower()]
+    end
+    if mlist and #mlist > 0 and ctx.ui then
+        row[#row+1] = {
+            text     = T(_("Appears (%1)"), #mlist),
+            callback = function() XRayUI._showMentions(entity, mlist) end,
+        }
+    end
+    if ctx.bridge and ctx.book_title then
+        row[#row+1] = {
+            text     = _("Tell me more"),
+            callback = function() XRayUI._wikiLookup(entity, kind) end,
+        }
+    end
+    XRayUI._detail = TextViewer:new{
+        title               = title,
+        text                = table.concat(lines, "\n"),
+        width               = math.floor(Screen:getWidth()  * 0.92),
+        height              = math.floor(Screen:getHeight() * 0.82),
+        buttons_table       = (#row > 0) and { row } or nil,
+        add_default_buttons = true,
+    }
+    UIManager:show(XRayUI._detail)
+end
+
+
+
 -- ── Characters ────────────────────────────────────────────────────────────────
 
 local function show_character(char)
@@ -59,7 +216,16 @@ local function show_character(char)
     end
     lines[#lines+1] = ""
     lines[#lines+1] = char.description or _("No description available.")
-    show_detail(char.name, lines)
+    entity_viewer(char.name, lines, char, "character")
+end
+
+-- Append a mention-count badge (e.g. "  7 ch") when available.
+local function with_count(label, item)
+    label = label or ""
+    if item and item.chapter_count and item.chapter_count > 0 then
+        return label .. string.format("  %dch", item.chapter_count)
+    end
+    return label
 end
 
 function XRayUI.showCharacters(xray, reading_pct)
@@ -74,7 +240,7 @@ function XRayUI.showCharacters(xray, reading_pct)
         if not is_spoiler(c, reading_pct) then
             items[#items+1] = {
                 text     = c.name,
-                mandatory = c.role and c.role:sub(1, 35) or "",
+                mandatory = with_count(c.role and c.role:sub(1, 30) or "", c),
                 callback  = function() show_character(c) end,
             }
         end
@@ -86,7 +252,7 @@ function XRayUI.showCharacters(xray, reading_pct)
         title = title .. string.format(_(" — %d ahead"), hidden)
     end
 
-    UIManager:show(Menu:new{
+    XRayUI._list_menu = Menu:new{
         title           = title,
         item_table      = items,
         is_borderless   = true,
@@ -95,7 +261,8 @@ function XRayUI.showCharacters(xray, reading_pct)
         single_line     = true,
         onMenuSelect    = function(_, item) item.callback() end,
         close_callback  = function(menu) UIManager:close(menu) end,
-    })
+    }
+    UIManager:show(XRayUI._list_menu)
 end
 
 
@@ -112,15 +279,15 @@ function XRayUI.showLocations(xray)
     for _, loc in ipairs(locs) do
         items[#items+1] = {
             text      = loc.name,
-            mandatory = (loc.importance or ""):sub(1, 35),
+            mandatory = with_count((loc.importance or ""):sub(1, 30), loc),
             callback  = function()
                 local lines = { loc.description or "", "", _("Importance: ") .. (loc.importance or "") }
-                show_detail(loc.name, lines)
+                entity_viewer(loc.name, lines, loc, "location")
             end,
         }
     end
 
-    UIManager:show(Menu:new{
+    XRayUI._list_menu = Menu:new{
         title          = string.format(_("Locations (%d)"), #items),
         item_table     = items,
         is_borderless  = true,
@@ -129,7 +296,8 @@ function XRayUI.showLocations(xray)
         single_line    = true,
         onMenuSelect   = function(_, item) item.callback() end,
         close_callback = function(menu) UIManager:close(menu) end,
-    })
+    }
+    UIManager:show(XRayUI._list_menu)
 end
 
 
@@ -146,19 +314,19 @@ function XRayUI.showTerms(xray)
     for _, t in ipairs(terms) do
         items[#items+1] = {
             text      = t.name,
-            mandatory = (t.definition or ""):sub(1, 40),
+            mandatory = with_count((t.definition or ""):sub(1, 35), t),
             callback  = function()
                 local lines = { t.definition or "" }
                 if t.aliases and #t.aliases > 0 then
                     lines[#lines+1] = ""
                     lines[#lines+1] = _("Also: ") .. table.concat(t.aliases, ", ")
                 end
-                show_detail(t.name, lines)
+                entity_viewer(t.name, lines, t, "term")
             end,
         }
     end
 
-    UIManager:show(Menu:new{
+    XRayUI._list_menu = Menu:new{
         title          = string.format(_("Terms & Lexicon (%d)"), #items),
         item_table     = items,
         is_borderless  = true,
@@ -167,7 +335,8 @@ function XRayUI.showTerms(xray)
         single_line    = true,
         onMenuSelect   = function(_, item) item.callback() end,
         close_callback = function(menu) UIManager:close(menu) end,
-    })
+    }
+    UIManager:show(XRayUI._list_menu)
 end
 
 
@@ -370,7 +539,7 @@ function XRayUI.showReferences(xray)
         end
     end
 
-    UIManager:show(Menu:new{
+    XRayUI._list_menu = Menu:new{
         title          = string.format(_("References (%d)"), #refs),
         item_table     = items,
         is_borderless  = true,
@@ -379,7 +548,8 @@ function XRayUI.showReferences(xray)
         single_line    = true,
         onMenuSelect   = function(_, item) item.callback() end,
         close_callback = function(menu) UIManager:close(menu) end,
-    })
+    }
+    UIManager:show(XRayUI._list_menu)
 end
 
 -- ── Inline lookup (check local cache before going to network) ─────────────────
@@ -484,7 +654,7 @@ function XRayUI.showLookupResult(kind, entity)
         end
     end
 
-    show_detail(title, lines)
+    entity_viewer(title, lines, entity, kind)
 end
 
 return XRayUI

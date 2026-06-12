@@ -242,4 +242,36 @@ function Bridge:noteAsync(params, on_done, on_error)
     }, on_done, on_error)
 end
 
+--- Async recap — "where you left off" (spoiler-bounded). on_done(text)/on_error(err).
+function Bridge:recapAsync(params, on_done, on_error)
+    return Async.post(self:url("/recap"), {
+        book_title  = params.book_title,
+        book_author = params.book_author,
+        reading_pct = params.reading_pct,
+    }, on_done, on_error)
+end
+
+--- Async AI Wiki deep-dive on one entity (spoiler-bounded). on_done(text)/on_error(err).
+function Bridge:wikiAsync(params, on_done, on_error)
+    return Async.post(self:url("/wiki"), {
+        book_title  = params.book_title,
+        book_author = params.book_author,
+        entity_name = params.entity_name,
+        entity_kind = params.entity_kind,
+        known       = params.known,
+        reading_pct = params.reading_pct,
+    }, on_done, on_error)
+end
+
+--- Async Section X-Ray for one chapter/part. on_done(text)/on_error(err).
+function Bridge:sectionAsync(params, on_done, on_error)
+    return Async.post(self:url("/section"), {
+        book_title    = params.book_title,
+        book_author   = params.book_author,
+        chapter_title = params.chapter_title,
+        start_pct     = params.start_pct,
+        end_pct       = params.end_pct,
+    }, on_done, on_error)
+end
+
 return Bridge

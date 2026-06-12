@@ -9,7 +9,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/python3</string>
-        <string>/Users/sam.painter/Projects/piread-bridge/server.py</string>
+        <string>/Users/sam.painter/Projects/piread/bridge/server.py</string>
     </array>
 
     <key>EnvironmentVariables</key>

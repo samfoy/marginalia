@@ -35,6 +35,7 @@ local PiRead = WidgetContainer:extend{
     _xray        = nil,    -- current book's X-Ray data (table)
     _book_hash   = nil,    -- epub hash (from bridge)
     _book_meta   = nil,    -- {title, author, series, ...}
+    _mentions    = nil,    -- per-entity chapter mention index {name_lower: [{chapter,position_pct,snippet}]}
     _xray_job_id = nil,    -- pending generation job id
     _poll_handle = nil,    -- UIManager scheduled handle for polling
 }
@@ -96,6 +97,7 @@ function PiRead:onPiReadNowReading()
     local s = self:loadSettings()
     if not s.enabled then return end
     local pct = s.spoiler_free and self:currentReadingPct() or nil
+    XRayUI.setContext(self:_xrayContext())
     Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end)
 end
 
@@ -120,11 +122,13 @@ function PiRead:onDocLoad()
         self._xray           = record.xray
         self._book_hash      = hash or record.book and record.book.epub_hash
         self._book_meta      = record.book
+        self._mentions       = record.mentions
         self._local_gen_at   = record.generated_at or ""
         -- Background freshness check — silently update if Mac has newer version
         UIManager:scheduleIn(3, function()
             self:checkXRayFreshness(title, author)
         end)
+        self:_maybeOfferRecap()
         return
     end
 
@@ -154,12 +158,14 @@ function PiRead:checkXRayFreshness(title, author)
         self._xray      = resp.xray
         self._book_meta = resp.book
         self._book_hash = resp.book and resp.book.epub_hash
+        self._mentions  = resp.mentions
         self._local_gen_at = resp.generated_at or ""
         local bh = self._book_hash
         if bh then
             Cache.saveXray(bh, {
                 xray         = resp.xray,
                 book         = resp.book,
+                mentions     = resp.mentions,
                 generated_at = resp.generated_at,
             })
         end
@@ -324,6 +330,7 @@ function PiRead:_storeXRay(resp)
     if not resp or not resp.xray then return end
     self._xray      = resp.xray
     self._book_meta = resp.book
+    self._mentions  = resp.mentions
     local hash      = resp.book and resp.book.epub_hash
     self._book_hash = hash
     -- Save to local device cache
@@ -331,9 +338,136 @@ function PiRead:_storeXRay(resp)
         Cache.saveXray(hash, {
             xray         = resp.xray,
             book         = resp.book,
+            mentions     = resp.mentions,
             generated_at = resp.generated_at,
         })
     end
+end
+
+-- ── Companion context + on-demand features ────────────────────────────────────
+
+-- Build the context handed to XRayUI so entity views can offer "Tell me more"
+-- (AI Wiki) and "Where appears" (jump-to-mention).
+function PiRead:_xrayContext()
+    local props = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
+    return {
+        bridge      = Bridge,
+        ui          = self.ui,
+        book_title  = props.title   or "",
+        book_author = props.authors or "",
+        reading_pct = self:currentReadingPct(),
+        mentions    = self._mentions,
+    }
+end
+
+local RESUME_GAP = 8 * 3600  -- only auto-offer a recap after an 8h+ gap
+
+-- On book open, offer a spoiler-bounded "where you left off" recap if the reader
+-- is mid-book and hasn't opened it recently.
+function PiRead:_maybeOfferRecap()
+    if not (self._xray and self._book_hash) then return end
+    local pct = self:currentReadingPct()
+    if pct < 5 or pct > 97 then return end
+    local seen = G_reader_settings:readSetting("piread_seen") or {}
+    local last = seen[self._book_hash] or 0
+    local now  = os.time()
+    seen[self._book_hash] = now
+    G_reader_settings:saveSetting("piread_seen", seen)
+    if (now - last) < RESUME_GAP then return end
+    UIManager:scheduleIn(1.5, function()
+        local dialog
+        dialog = ButtonDialog:new{
+            title       = _("Welcome back — want a quick recap of where you left off?"),
+            title_align = "center",
+            buttons     = {{
+                { text = _("Not now"), callback = function() UIManager:close(dialog) end },
+                { text = _("Recap"),   callback = function()
+                    UIManager:close(dialog)
+                    self:showRecap()
+                end },
+            }},
+        }
+        UIManager:show(dialog)
+    end)
+end
+
+-- Spoiler-bounded recap of the story up to the reader's current position.
+function PiRead:showRecap()
+    local s = self:loadSettings()
+    if not s.enabled then return end
+    if not NetworkMgr:isConnected() then
+        UIManager:show(InfoMessage:new{ text = _("Not connected — recap needs the bridge."), timeout = 4 })
+        return
+    end
+    local props = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
+    local close_loading = self:showLoadingAnim(_("Pi is recapping"))
+    Bridge:recapAsync({
+        book_title  = props.title   or "",
+        book_author = props.authors or "",
+        reading_pct = self:currentReadingPct(),
+    }, function(text)
+        close_loading()
+        UIManager:show(TextViewer:new{
+            title  = _("Where you left off"),
+            text   = text,
+            width  = math.floor(Screen:getWidth()  * 0.92),
+            height = math.floor(Screen:getHeight() * 0.78),
+        })
+    end, function(err)
+        close_loading()
+        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
+    end)
+end
+
+-- Section X-Ray: analyze the current chapter (bounded to reading position).
+function PiRead:showSectionXRay()
+    if not (self.ui and self.ui.document) then return end
+    if not NetworkMgr:isConnected() then
+        UIManager:show(InfoMessage:new{ text = _("Not connected — Section X-Ray needs the bridge."), timeout = 4 })
+        return
+    end
+    local props  = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
+    local cur    = self.ui:getCurrentPage() or 1
+    local total  = self.ui.document:getPageCount() or 1
+    local read_pct = self:currentReadingPct()
+
+    local chapter_title, start_pct, end_pct
+    local ok_toc, toc = pcall(function() return self.ui.document:getToc() end)
+    if ok_toc and toc and #toc > 0 then
+        for i = #toc, 1, -1 do
+            if (toc[i].page or 1) <= cur then
+                chapter_title = toc[i].title
+                start_pct     = (toc[i].page or 1) / total * 100
+                end_pct       = (i < #toc) and ((toc[i+1].page - 1) / total * 100) or 100
+                break
+            end
+        end
+    end
+    start_pct = start_pct or math.max(0, (cur / total * 100) - 6)
+    end_pct   = end_pct   or (cur / total * 100)
+    -- Never analyze past where the reader actually is.
+    if end_pct > read_pct then end_pct = read_pct end
+    if end_pct <= start_pct then end_pct = math.min(100, start_pct + 2) end
+
+    local close_loading = self:showLoadingAnim(_("Analyzing this chapter"))
+    Bridge:sectionAsync({
+        book_title    = props.title   or "",
+        book_author   = props.authors or "",
+        chapter_title = chapter_title,
+        start_pct     = start_pct,
+        end_pct       = end_pct,
+    }, function(text)
+        close_loading()
+        UIManager:show(TextViewer:new{
+            title  = chapter_title and T(_("Section: %1"), chapter_title) or _("This section"),
+            text   = text,
+            width  = math.floor(Screen:getWidth()  * 0.92),
+            height = math.floor(Screen:getHeight() * 0.78),
+        })
+    end, function(err)
+        close_loading()
+        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
+    end)
 end
 
 -- ── Highlight dialog hook ─────────────────────────────────────────────────────
@@ -607,6 +741,7 @@ function PiRead:buildMenu()
                 return
             end
             local pct = s.spoiler_free and self:currentReadingPct() or nil
+            XRayUI.setContext(self:_xrayContext())
             Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end)
         end,
     })
@@ -642,8 +777,23 @@ function PiRead:buildMenu()
                 return
             end
             local pct = self:loadSettings().spoiler_free and self:currentReadingPct() or nil
+            XRayUI.setContext(self:_xrayContext())
             XRayUI.showMenu(self._xray, pct)
         end,
+    })
+
+    -- Recap: where I left off (spoiler-bounded)
+    table.insert(items, {
+        text         = _("Recap: where I left off"),
+        enabled_func = function() return self.ui and self.ui.document ~= nil end,
+        callback     = function() self:showRecap() end,
+    })
+
+    -- Section X-Ray for the current chapter
+    table.insert(items, {
+        text         = _("Section X-Ray (this chapter)"),
+        enabled_func = function() return self.ui and self.ui.document ~= nil end,
+        callback     = function() self:showSectionXRay() end,
     })
 
     -- Toggle enabled
