@@ -45,6 +45,7 @@ import xray_cache
 import pi_session
 import mentions
 import rag
+import series
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -104,8 +105,10 @@ DEFAULT_SYSTEM = (
 RECAP_INSTRUCTIONS = (
     "You are a reading companion. The reader is returning to a book after a break. "
     "Using ONLY the provided excerpts and events — all from BEFORE their current "
-    "position — write a brief 'where you left off' recap: the immediate situation, "
-    "who is involved, and the most recent significant developments. "
+    "position (which may include earlier books in the same series that the reader "
+    "has already finished) — write a brief 'where you left off' recap: the immediate "
+    "situation, who is involved, and the most recent significant developments. If the "
+    "reader is early in a sequel, briefly bridge from how the previous book ended. "
     "5–8 sentences, plain prose, no markdown. Do not state anything not supported "
     "by the excerpts, and never reference events past the reader's position."
 )
@@ -113,10 +116,11 @@ WIKI_INSTRUCTIONS = (
     "You are a reading companion writing a spoiler-safe encyclopedia entry about a "
     "specific person, place, term, or reference from a book, bounded to what the "
     "reader has seen so far. Use ONLY the provided excerpts (all from before the "
-    "reader's current position). Cover who/what it is, why it matters, and key "
-    "relationships or moments SO FAR. 5–10 sentences, plain prose, no markdown. "
-    "Do not reveal or hint at anything beyond the reader's position. If little is "
-    "known yet, say so briefly."
+    "reader's current position, which may span earlier books in the same series "
+    "the reader has finished). Cover who/what it is, why it matters, and key "
+    "relationships or moments SO FAR, drawing the through-line across books when the "
+    "excerpts support it. 5–10 sentences, plain prose, no markdown. Do not reveal or "
+    "hint at anything beyond the reader's position. If little is known yet, say so."
 )
 SECTION_INSTRUCTIONS = (
     "You are a reading companion analyzing one chapter/section the reader has just "
@@ -254,6 +258,15 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
 
         update("generating",
                progress=f"Generating X-Ray ({content.total_chars:,} chars)")
+
+        # Authoritative series from Calibre metadata.db (EPUB tags are often stale).
+        sv = series.resolve(calibre_id=book_meta.get("calibre_id"),
+                            title=content.title, author=content.author)
+        if sv:
+            content.series = sv["series"]
+            content.series_index = sv["series_index"]
+            logging.info("series: resolved '%s' #%s for %s",
+                         sv["series"], sv["series_index"], content.title)
 
         xray, strategy = generate(content)
 
@@ -515,12 +528,21 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _rag_context(self, title: str, author: str, query: str,
-                     reading_pct, k: int = 6, max_chars: int = 6000) -> str:
+                     reading_pct, k: int = 8, max_chars: int = 7000) -> str:
+        """Series-aware position-bounded retrieval context.
+
+        Pulls from the current book (≤ reading_pct) and every prior book in the
+        series the reader has finished — never from future books or ahead in the
+        current one.
+        """
         try:
-            h = self._book_hash(title, author)
-            if not h or not rag.has_index(h):
+            rec = xray_cache.find_by_title_author(title, author)
+            if not rec and author:
+                rec = xray_cache.find_by_title_author(title, "")
+            if not rec:
                 return ""
-            hits = rag.retrieve(h, query, float(reading_pct or 0), k=k)
+            scope = series.build_scope(rec, float(reading_pct or 0))
+            hits = rag.retrieve_series(scope, query, k=k)
             return rag.context_block(hits, max_chars=max_chars)
         except Exception:
             logging.exception("rag context lookup failed (non-fatal)")

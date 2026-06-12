@@ -303,12 +303,36 @@ def section_chunks(book_hash: str, start_pct: float, end_pct: float,
     return out
 
 
+def retrieve_series(scope: list[dict], query: str,
+                    k: int = DEFAULT_TOP_K) -> list[dict]:
+    """Retrieve across a series reading scope, merging by score.
+
+    `scope` is a list of {hash, title, series_index, max_pct} (see
+    series.build_scope). Each book is queried bounded to its own max_pct, so
+    spoiler safety holds per-book. Results are tagged with the source book.
+    """
+    all_hits: list[dict] = []
+    for s in scope:
+        h = s.get("hash")
+        if not h or not has_index(h):
+            continue
+        hits = retrieve(h, query, s.get("max_pct"), k=k)
+        for hit in hits:
+            hit["book"] = s.get("title", "")
+            hit["series_index"] = s.get("series_index")
+            all_hits.append(hit)
+    all_hits.sort(key=lambda x: -x.get("score", 0))
+    return all_hits[:k]
+
+
 def context_block(results: list[dict], max_chars: int = 6000) -> str:
     """Format retrieved chunks into a labeled context block for an LLM prompt."""
     parts: list[str] = []
     total = 0
     for r in results:
-        label = f'[{r.get("chapter") or "?"} · {int(r.get("position_pct", 0))}%]'
+        book = r.get("book")
+        book_tag = (book + " · ") if book else ""
+        label = f'[{book_tag}{r.get("chapter") or "?"} · {int(r.get("position_pct", 0))}%]'
         snippet = r.get("text", "").strip()
         piece = f"{label}\n{snippet}"
         if total + len(piece) > max_chars:

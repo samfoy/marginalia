@@ -9,11 +9,96 @@ Called from xray_generator.build_record() when series info is present.
 """
 
 import logging
+import os
+import re
+import sqlite3
 from copy import deepcopy
 
 import xray_cache
 
 logger = logging.getLogger(__name__)
+
+_CALIBRE_DB = os.path.expanduser("~/CalibreLibrary/metadata.db")
+
+
+# ── Authoritative series resolution from Calibre's metadata.db ──────────────────
+# The EPUB-embedded OPF and per-book metadata.opf are frequently stale or
+# missing series tags; metadata.db is the source of truth.
+
+def resolve(calibre_id: int | None = None, title: str = "",
+            author: str = "") -> dict | None:
+    """Return {'series': name, 'series_index': int} from metadata.db, or None."""
+    if not os.path.exists(_CALIBRE_DB):
+        return None
+    try:
+        con = sqlite3.connect(f"file:{_CALIBRE_DB}?mode=ro", uri=True)
+        try:
+            base = (
+                "SELECT s.name, b.series_index FROM books b "
+                "LEFT JOIN books_series_link l ON l.book = b.id "
+                "LEFT JOIN series s ON s.id = l.series "
+            )
+            row = None
+            if calibre_id:
+                row = con.execute(base + "WHERE b.id = ?", (calibre_id,)).fetchone()
+            if (not row or not row[0]) and title:
+                row = con.execute(base + "WHERE b.title = ? COLLATE NOCASE",
+                                  (title,)).fetchone()
+            if (not row or not row[0]) and title:
+                # Fuzzy: strip subtitle after colon/dash, match prefix
+                stem = re.split(r"[:\u2014-]", title, 1)[0].strip()
+                if stem and stem.lower() != title.lower():
+                    row = con.execute(base + "WHERE b.title LIKE ? COLLATE NOCASE",
+                                      (stem + "%",)).fetchone()
+            if row and row[0]:
+                return {"series": row[0], "series_index": int(float(row[1] or 0))}
+        finally:
+            con.close()
+    except Exception:
+        logger.exception("series.resolve failed (calibre_id=%s title=%r)", calibre_id, title)
+    return None
+
+
+def build_scope(record: dict, reading_pct: float) -> list[dict]:
+    """Spoiler-bounded reading scope across a series.
+
+    Returns an ordered list of {hash, title, series_index, max_pct, current}:
+      - the current book, bounded to reading_pct
+      - every PRIOR book in the series that has a retrieval index, bounded to
+        its last_reading_pct (default 100% — assumed finished)
+    Future books (index > current) are excluded entirely. This is the spoiler
+    boundary for all series-aware retrieval.
+    """
+    book = record.get("book", {})
+    cur_hash = book.get("epub_hash")
+    cur_idx = book.get("series_index")
+    series = book.get("series")
+    scope = [{
+        "hash": cur_hash,
+        "title": book.get("title", ""),
+        "series_index": cur_idx,
+        "max_pct": float(reading_pct) if reading_pct else 100.0,
+        "current": True,
+    }]
+    if not (series and cur_idx):
+        return scope
+    for r in xray_cache.get_series(series):
+        b = r.get("book", {})
+        idx = b.get("series_index") or 0
+        h = b.get("epub_hash")
+        if 0 < idx < cur_idx and h and h != cur_hash:
+            # Prior books in the series are assumed finished — if you're reading
+            # book N you've read 1..N-1 in full. last_reading_pct only reflects
+            # where the cache last saw you, so it's not a reliable bound here.
+            scope.append({
+                "hash": h,
+                "title": b.get("title", ""),
+                "series_index": idx,
+                "max_pct": 100.0,
+                "current": False,
+            })
+    scope.sort(key=lambda s: s.get("series_index") or 0)
+    return scope
 
 
 def _norm(name: str) -> str:
