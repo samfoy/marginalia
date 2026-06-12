@@ -167,14 +167,15 @@ def _gpt_creds():
     return _gpt_creds_cache
 
 
-def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5") -> str:
+def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5",
+              instructions: str | None = None) -> str:
     """Call GPT-5.x via bedrock-mantle Responses API with empty-completion retry."""
     creds, SigV4Auth, AWSRequest = _gpt_creds()
     url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses"
     body_dict = {
         "model": model_id,
         "max_output_tokens": MAX_TOKENS,
-        "instructions": _SYSTEM,
+        "instructions": instructions if instructions is not None else _SYSTEM,
         "input": prompt,
     }
     for attempt in range(GPT_EMPTY_RETRIES):

@@ -50,7 +50,7 @@ PORT       = int(os.environ.get("PIREAD_PORT", 7731))
 PROFILE    = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
 REGION     = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
 # server.py uses Sonnet for /ask and knowledge-only X-Ray — never GPT (no Bedrock invoke_model support)
-MODEL_ID   = os.environ.get("PIREAD_ASK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+MODEL_ID   = os.environ.get("PIREAD_MODEL_ID", "openai.gpt-5.5")
 TOKEN      = os.environ.get("PIREAD_TOKEN", "")
 MAX_TOKENS = int(os.environ.get("PIREAD_MAX_TOKENS", 600))
 VAULT_ROOT = os.path.expanduser(os.environ.get("PIREAD_VAULT", "~/Documents/Sam"))
@@ -99,16 +99,11 @@ DEFAULT_SYSTEM = (
 
 # ── Bedrock client ────────────────────────────────────────────────────────────
 
-def _bedrock_client():
-    session = boto3.Session(profile_name=PROFILE, region_name=REGION)
-    return session.client("bedrock-runtime")
-
-
 def ask_claude(text: str, context: str | None, book_title: str | None,
                book_author: str | None, mode: str) -> str:
+    from xray_generator import _call, _call_gpt
     system = SYSTEM_PROMPTS.get(mode, DEFAULT_SYSTEM)
 
-    # Build the user message
     parts: list[str] = []
     if book_title:
         line = f'Book: "{book_title}"'
@@ -118,25 +113,26 @@ def ask_claude(text: str, context: str | None, book_title: str | None,
     if context:
         parts.append(f"Surrounding passage:\n{context}")
     parts.append(f"Selected text: {text}")
-
     user_message = "\n\n".join(parts)
 
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": MAX_TOKENS,
-        "system": system,
-        "messages": [{"role": "user", "content": user_message}],
-    }
-
-    client = _bedrock_client()
-    resp = client.invoke_model(
-        modelId=MODEL_ID,
-        body=json.dumps(body),
-        contentType="application/json",
-        accept="application/json",
-    )
-    result = json.loads(resp["body"].read())
-    return result["content"][0]["text"].strip()
+    if MODEL_ID.startswith("openai."):
+        # GPT via bedrock-mantle: system → instructions, user → input
+        raw = _call_gpt(user_message, model_id=MODEL_ID, instructions=system)
+    else:
+        # Anthropic via Bedrock invoke_model
+        import boto3
+        session = boto3.Session(profile_name=PROFILE, region_name=REGION)
+        client  = session.client("bedrock-runtime")
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": MAX_TOKENS,
+            "system": system,
+            "messages": [{"role": "user", "content": user_message}],
+        }
+        resp   = client.invoke_model(modelId=MODEL_ID, body=json.dumps(body),
+                                     contentType="application/json", accept="application/json")
+        raw = json.loads(resp["body"].read())["content"][0]["text"]
+    return raw.strip()
 
 
 # ── X-Ray generation job registry ─────────────────────────────────────────────
