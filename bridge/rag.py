@@ -39,6 +39,7 @@ EMBED_MODEL   = os.environ.get("PIREAD_EMBED_MODEL", "cohere.embed-english-v3")
 CHUNK_CHARS   = int(os.environ.get("PIREAD_RAG_CHUNK_CHARS", "1600"))   # ~400 tokens
 CHUNK_OVERLAP = int(os.environ.get("PIREAD_RAG_OVERLAP", "200"))
 EMBED_BATCH   = int(os.environ.get("PIREAD_RAG_BATCH", "96"))           # Cohere max texts/call
+EMBED_MAXLEN  = int(os.environ.get("PIREAD_RAG_MAXLEN", "2048"))         # Cohere hard per-text char limit
 EMBED_WORKERS = int(os.environ.get("PIREAD_RAG_WORKERS", "4"))
 DEFAULT_TOP_K = int(os.environ.get("PIREAD_RAG_TOP_K", "8"))
 
@@ -58,6 +59,9 @@ def _embed_client():
 
 def _embed_batch(texts: list[str], input_type: str) -> list[list[float]]:
     """Embed a single batch (≤ EMBED_BATCH texts) via Cohere on Bedrock."""
+    # Cohere enforces a hard 2048-char limit per text. Truncate defensively;
+    # the lost tail is covered by the next chunk's overlap.
+    texts = [t[:EMBED_MAXLEN] for t in texts]
     body = json.dumps({"texts": texts, "input_type": input_type})
     resp = _embed_client().invoke_model(
         modelId=EMBED_MODEL,
