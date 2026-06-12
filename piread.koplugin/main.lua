@@ -91,6 +91,30 @@ function PiRead:onDispatcherRegisterActions()
         title    = _("Pi: Now Reading dashboard"),
         reader   = true,
     })
+    Dispatcher:registerAction("piread_recap", {
+        category = "none",
+        event    = "PiReadRecap",
+        title    = _("Pi: Recap where I left off"),
+        reader   = true,
+    })
+    Dispatcher:registerAction("piread_section", {
+        category = "none",
+        event    = "PiReadSection",
+        title    = _("Pi: Section X-Ray (this chapter)"),
+        reader   = true,
+    })
+    Dispatcher:registerAction("piread_ask", {
+        category = "none",
+        event    = "PiReadAsk",
+        title    = _("Pi: Ask Pi"),
+        reader   = true,
+    })
+    Dispatcher:registerAction("piread_xray", {
+        category = "none",
+        event    = "PiReadXRay",
+        title    = _("Pi: X-Ray browser"),
+        reader   = true,
+    })
 end
 
 function PiRead:onPiReadNowReading()
@@ -99,6 +123,42 @@ function PiRead:onPiReadNowReading()
     local pct = s.spoiler_free and self:currentReadingPct() or nil
     XRayUI.setContext(self:_xrayContext())
     Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end)
+end
+
+function PiRead:onPiReadRecap()
+    if not self:loadSettings().enabled then return true end
+    self:showRecap()
+    return true
+end
+
+function PiRead:onPiReadSection()
+    if not self:loadSettings().enabled then return true end
+    self:showSectionXRay()
+    return true
+end
+
+function PiRead:onPiReadAsk()
+    if not self:loadSettings().enabled then return true end
+    self:showChatDialog()
+    return true
+end
+
+function PiRead:onPiReadXRay()
+    local s = self:loadSettings()
+    if not s.enabled then return true end
+    if not self._xray then
+        UIManager:show(InfoMessage:new{
+            text    = self._xray_job_id
+                        and _("X-Ray is being generated. Try again in a minute.")
+                        or  _("No X-Ray data. Open a book that's in your Calibre library."),
+            timeout = 4,
+        })
+        return true
+    end
+    local pct = s.spoiler_free and self:currentReadingPct() or nil
+    XRayUI.setContext(self:_xrayContext())
+    XRayUI.showMenu(self._xray, pct)
+    return true
 end
 
 function PiRead:onReaderReady()
