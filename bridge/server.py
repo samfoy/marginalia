@@ -49,7 +49,8 @@ import pi_session
 PORT       = int(os.environ.get("PIREAD_PORT", 7731))
 PROFILE    = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
 REGION     = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
-MODEL_ID   = os.environ.get("PIREAD_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+# server.py uses Sonnet for /ask and knowledge-only X-Ray — never GPT (no Bedrock invoke_model support)
+MODEL_ID   = os.environ.get("PIREAD_ASK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 TOKEN      = os.environ.get("PIREAD_TOKEN", "")
 MAX_TOKENS = int(os.environ.get("PIREAD_MAX_TOKENS", 600))
 VAULT_ROOT = os.path.expanduser(os.environ.get("PIREAD_VAULT", "~/Documents/Sam"))
@@ -212,6 +213,9 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
     try:
         update("finding", progress="Looking up book in Calibre")
         book_meta = find_epub(title, author)
+        if not book_meta:
+            # Author mismatch is common (EPUB metadata vs Calibre). Retry title-only.
+            book_meta = find_epub(title, "")
         if not book_meta:
             # Fallback: generate from Claude's knowledge (no EPUB needed)
             logging.info("Book not in Calibre, using knowledge-only mode: %s", title)
