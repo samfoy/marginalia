@@ -45,8 +45,9 @@ local function dlog(msg)
     logger.dbg("piread_async: " .. msg)
 end
 
-function Async.post(url, body_table, on_done, on_error)
+function Async.post(url, body_table, on_done, on_error, opts)
     local body_str = rapidjson.encode(body_table)
+    local want_raw = opts and opts.raw
 
     -- ── child function — runs in forked subprocess ──────────────────────────
     -- Must not call require() for new modules — only use parent-captured upvalues.
@@ -109,7 +110,7 @@ function Async.post(url, body_table, on_done, on_error)
             local resp, ferr = rapidjson.decode(table.concat(sink))
             if not resp then on_error("decode: " .. (ferr or "?"))
             elseif type(resp.error) == "string" and resp.error ~= "" then on_error(resp.error)
-            else on_done(resp.response or "") end
+            else on_done(want_raw and resp or (resp.response or "")) end
         end
         return function() end
     end
@@ -189,7 +190,7 @@ function Async.post(url, body_table, on_done, on_error)
             elseif type(resp.error) == "string" and resp.error ~= "" then
                 finish(nil, resp.error)
             else
-                finish(resp.response or "", nil)
+                finish(want_raw and resp or (resp.response or ""), nil)
             end
             return
         end

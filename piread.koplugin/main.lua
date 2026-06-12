@@ -142,35 +142,42 @@ end
 function PiRead:checkXRayFreshness(title, author)
     if not NetworkMgr:isConnected() then return end
     local gen_at = self._local_gen_at or ""
-    local resp, err = Bridge:xrayInit({
+    -- Async so a slow network never blocks the UI thread on book open.
+    Bridge:xrayInitAsync({
         book_title          = title,
         book_author         = author,
         reading_pct         = self:currentReadingPct(),
         device_generated_at = gen_at,
-    })
-    if err or not resp then return end
-    if resp.status == "current" then
-        logger.info("piread: X-Ray is current for", title)
-        return
-    end
-    if resp.status == "ready" and resp.xray then
-        logger.info("piread: X-Ray updated from bridge for", title)
-        self._xray      = resp.xray
-        self._book_meta = resp.book
-        self._book_hash = resp.book and resp.book.epub_hash
-        self._mentions  = resp.mentions
-        self._local_gen_at = resp.generated_at or ""
-        local bh = self._book_hash
-        if bh then
-            Cache.saveXray(bh, {
-                xray         = resp.xray,
-                book         = resp.book,
-                mentions     = resp.mentions,
-                generated_at = resp.generated_at,
-            })
+    }, function(resp)
+        if not resp then return end
+        if resp.status == "current" then
+            logger.info("piread: X-Ray is current for", title)
+            return
         end
-        logger.info("piread: Device X-Ray cache refreshed for", title)
-    end
+        if resp.status == "ready" and resp.xray then
+            logger.info("piread: X-Ray updated from bridge for", title)
+            self._xray      = resp.xray
+            self._book_meta = resp.book
+            self._book_hash = resp.book and resp.book.epub_hash
+            self._mentions  = resp.mentions
+            self._local_gen_at = resp.generated_at or ""
+            local bh = self._book_hash
+            if bh then
+                Cache.saveXray(bh, {
+                    xray         = resp.xray,
+                    book         = resp.book,
+                    mentions     = resp.mentions,
+                    generated_at = resp.generated_at,
+                })
+                logger.info("piread: Device X-Ray cache refreshed for", title)
+            end
+        elseif resp.status == "generating" then
+            self._xray_job_id = resp.job_id
+            self:schedulePoll()
+        end
+    end, function(err)
+        logger.warn("piread: freshness check error:", err)
+    end)
 end
 
 function PiRead:currentReadingPct()
@@ -256,31 +263,27 @@ end
 
 function PiRead:requestXRay(title, author, reading_pct)
     logger.info("piread: requesting X-Ray for", title)
-    local resp, err = Bridge:xrayInit({
+    Bridge:xrayInitAsync({
         book_title  = title,
         book_author = author,
         reading_pct = reading_pct or 0,
-    })
-    if err then
+    }, function(resp)
+        if not resp then return end
+        if resp.status == "ready" then
+            logger.info("piread: X-Ray ready (cached=%s)", tostring(resp.cached))
+            self:_storeXRay(resp)
+        elseif resp.status == "generating" then
+            logger.info("piread: X-Ray generating, job_id=%s", tostring(resp.job_id))
+            self._xray_job_id = resp.job_id
+            self:schedulePoll()
+            UIManager:show(InfoMessage:new{
+                text    = _("Pi is building your X-Ray…"),
+                timeout = 4,
+            })
+        end
+    end, function(err)
         logger.warn("piread: /xray/init error:", err)
-        return
-    end
-
-    if resp.status == "ready" then
-        -- Cache hit — save locally and load
-        logger.info("piread: X-Ray ready (cached=%s)", tostring(resp.cached))
-        self:_storeXRay(resp)
-
-    elseif resp.status == "generating" then
-        -- Background job started — poll
-        logger.info("piread: X-Ray generating, job_id=%s", tostring(resp.job_id))
-        self._xray_job_id = resp.job_id
-        self:schedulePoll()
-        UIManager:show(InfoMessage:new{
-            text    = _("Pi is building your X-Ray…"),
-            timeout = 4,
-        })
-    end
+    end)
 end
 
 function PiRead:schedulePoll()

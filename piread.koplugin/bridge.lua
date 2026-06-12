@@ -168,10 +168,18 @@ function Bridge:xrayInit(params)
     return self:_post("/xray/init", params)
 end
 
+--- Async X-Ray init — non-blocking. Calls on_done(full_response_table) or on_error(err).
+-- Used on book open so a slow/flaky network never freezes the UI thread.
+function Bridge:xrayInitAsync(params, on_done, on_error)
+    return Async.post(self:url("/xray/init"), params, on_done, on_error, { raw = true })
+end
+
 --- Poll an in-progress X-Ray generation job.
+-- Tight timeouts (3s) keep this synchronous GET well under the 5s ANR
+-- threshold on flaky networks; pollXRayStatus retries on timeout.
 -- Returns response table or (nil, err).
 function Bridge:xrayStatus(job_id)
-    return self:_get("/xray/status/" .. tostring(job_id))
+    return self:_get("/xray/status/" .. tostring(job_id), 2, 3)
 end
 
 --- Report reading progress to keep the bridge cache current.
