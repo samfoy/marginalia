@@ -148,29 +148,47 @@ def _client():
 
 # ── Bedrock-Mantle client for GPT-5.x (SigV4, us-east-2) ─────────────────────
 
-_gpt_creds_lock  = threading.Lock()
-_gpt_creds_cache = None
+_gpt_session_lock = threading.Lock()
+_gpt_session = None
 
-def _gpt_creds():
-    global _gpt_creds_cache
-    if _gpt_creds_cache is None:
-        with _gpt_creds_lock:
-            if _gpt_creds_cache is None:
-                from botocore.auth import SigV4Auth
-                from botocore.awsrequest import AWSRequest
-                session = boto3.Session(profile_name=PROFILE, region_name="us-east-2")
-                _gpt_creds_cache = (
-                    session.get_credentials().get_frozen_credentials(),
-                    SigV4Auth,
-                    AWSRequest,
-                )
-    return _gpt_creds_cache
+
+def _gpt_session_get(force_new: bool = False):
+    """Cached boto3 session for the GPT SigV4 path.
+
+    openclaw-bedrock is an assume-role profile (role_arn + source_profile), so
+    its credentials are *refreshable*. We must take frozen credentials PER
+    REQUEST (never cache the frozen snapshot) or the assumed-role STS token
+    expires after ~1h and every GPT call 401s.
+    """
+    global _gpt_session
+    with _gpt_session_lock:
+        if _gpt_session is None or force_new:
+            _gpt_session = boto3.Session(profile_name=PROFILE, region_name="us-east-2")
+    return _gpt_session
+
+
+def _gpt_sign(url: str, body_bytes: bytes, force_refresh: bool = False) -> dict:
+    """SigV4-sign a request with freshly-frozen (auto-refreshed) credentials."""
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    session = _gpt_session_get(force_new=force_refresh)
+    creds = session.get_credentials()
+    if creds is None:
+        raise RuntimeError(f"No AWS credentials for profile '{PROFILE}'")
+    frozen = creds.get_frozen_credentials()  # refreshes refreshable creds as needed
+    req = AWSRequest(method="POST", url=url, data=body_bytes,
+                     headers={"Content-Type": "application/json"})
+    SigV4Auth(frozen, "bedrock", "us-east-2").add_auth(req)
+    return dict(req.headers)
 
 
 def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5",
               instructions: str | None = None) -> str:
-    """Call GPT-5.x via bedrock-mantle Responses API with empty-completion retry."""
-    creds, SigV4Auth, AWSRequest = _gpt_creds()
+    """Call GPT-5.x via bedrock-mantle Responses API.
+
+    Retries on empty completions and, on a 401/403, rebuilds the session so
+    expired assume-role credentials are re-fetched, then retries.
+    """
     url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses"
     body_dict = {
         "model": model_id,
@@ -178,19 +196,26 @@ def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5",
         "instructions": instructions if instructions is not None else _SYSTEM,
         "input": prompt,
     }
+    body_bytes = json.dumps(body_dict).encode()
+
+    auth_failed = False
     for attempt in range(GPT_EMPTY_RETRIES):
-        body_bytes = json.dumps(body_dict).encode()
-        req = AWSRequest(method="POST", url=url, data=body_bytes,
-                         headers={"Content-Type": "application/json"})
-        SigV4Auth(creds, "bedrock", "us-east-2").add_auth(req)
+        headers = _gpt_sign(url, body_bytes, force_refresh=auth_failed)
         try:
             r = urllib.request.urlopen(
-                urllib.request.Request(url, data=body_bytes, headers=dict(req.headers)),
+                urllib.request.Request(url, data=body_bytes, headers=headers),
                 timeout=600,
             )
             d = json.loads(r.read())
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"GPT API {exc.code}: {exc.read()[:200]}") from exc
+            detail = exc.read()[:200]
+            if exc.code in (401, 403):
+                logger.warning("GPT auth %d — refreshing credentials, retry %d/%d",
+                               exc.code, attempt + 1, GPT_EMPTY_RETRIES)
+                auth_failed = True
+                continue
+            raise RuntimeError(f"GPT API {exc.code}: {detail}") from exc
+        auth_failed = False
         text = "".join(
             c["text"]
             for item in d.get("output", [])
@@ -200,7 +225,10 @@ def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5",
         if text.strip():
             return text
         logger.warning("_call_gpt empty completion attempt %d/%d", attempt + 1, GPT_EMPTY_RETRIES)
-    raise RuntimeError(f"_call_gpt: empty completion after {GPT_EMPTY_RETRIES} retries")
+    raise RuntimeError(
+        "_call_gpt: failed after %d retries (%s)"
+        % (GPT_EMPTY_RETRIES, "auth" if auth_failed else "empty completion")
+    )
 
 
 def _call(prompt: str, model_id: str = MODEL_ID) -> str:
