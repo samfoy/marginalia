@@ -237,18 +237,18 @@ def _load_index(book_hash: str):
 
 # ── Retrieval ────────────────────────────────────────────────────────────────
 
-def retrieve(book_hash: str, query: str, reading_pct: float | None,
-             k: int = DEFAULT_TOP_K) -> list[dict]:
-    """Return up to k chunks most relevant to `query`, bounded to reading_pct.
+def _embed_query(query: str):
+    """Embed a query once. Returns a normalized vector or None."""
+    qv = _embed_texts([query], "search_query")
+    return qv[0] if qv.size else None
 
-    Chunks whose position_pct is past the reader are never considered — spoiler
-    safety is structural, not prompt-based. Each result: {chapter, position_pct,
-    text, score}.
-    """
+
+def _retrieve_vec(book_hash: str, qv, reading_pct: float | None,
+                  k: int) -> list[dict]:
+    """Score one book's chunks against a pre-embedded query vector."""
     mat, info = _load_index(book_hash)
     if mat is None or info is None or mat.size == 0:
         return []
-
     chunks = info["chunks"]
     bound = 100.0 if (reading_pct is None or reading_pct <= 0) else float(reading_pct)
     eligible = [i for i, c in enumerate(chunks) if c.get("position_pct", 0) <= bound]
@@ -257,16 +257,9 @@ def retrieve(book_hash: str, query: str, reading_pct: float | None,
         eligible = [i for i, c in enumerate(chunks) if c.get("position_pct", 0) <= 5]
     if not eligible:
         return []
-
-    qv = _embed_texts([query], "search_query")
-    if qv.size == 0:
-        return []
-    qv = qv[0]
-
     sub = mat[eligible]
     scores = sub @ qv
     order = np.argsort(-scores)[:k]
-
     out: list[dict] = []
     for j in order:
         idx = eligible[int(j)]
@@ -278,6 +271,20 @@ def retrieve(book_hash: str, query: str, reading_pct: float | None,
             "score":        float(scores[int(j)]),
         })
     return out
+
+
+def retrieve(book_hash: str, query: str, reading_pct: float | None,
+             k: int = DEFAULT_TOP_K) -> list[dict]:
+    """Return up to k chunks most relevant to `query`, bounded to reading_pct.
+
+    Chunks whose position_pct is past the reader are never considered — spoiler
+    safety is structural, not prompt-based. Each result: {chapter, position_pct,
+    text, score}.
+    """
+    qv = _embed_query(query)
+    if qv is None:
+        return []
+    return _retrieve_vec(book_hash, qv, reading_pct, k)
 
 
 def section_chunks(book_hash: str, start_pct: float, end_pct: float,
@@ -311,12 +318,15 @@ def retrieve_series(scope: list[dict], query: str,
     series.build_scope). Each book is queried bounded to its own max_pct, so
     spoiler safety holds per-book. Results are tagged with the source book.
     """
+    qv = _embed_query(query)
+    if qv is None:
+        return []
     all_hits: list[dict] = []
     for s in scope:
         h = s.get("hash")
         if not h or not has_index(h):
             continue
-        hits = retrieve(h, query, s.get("max_pct"), k=k)
+        hits = _retrieve_vec(h, qv, s.get("max_pct"), k)
         for hit in hits:
             hit["book"] = s.get("title", "")
             hit["series_index"] = s.get("series_index")

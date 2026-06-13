@@ -183,11 +183,16 @@ def _gpt_sign(url: str, body_bytes: bytes, force_refresh: bool = False) -> dict:
 
 
 def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5",
-              instructions: str | None = None) -> str:
+              instructions: str | None = None,
+              reasoning_effort: str | None = None) -> str:
     """Call GPT-5.x via bedrock-mantle Responses API.
 
     Retries on empty completions and, on a 401/403, rebuilds the session so
     expired assume-role credentials are re-fetched, then retries.
+
+    reasoning_effort ('none'|'low'|'medium'|'high'): lower = much faster. Leave
+    None for X-Ray extraction (reasoning improves accuracy); pass 'low' for
+    interactive companion calls (recap/wiki/ask) — ~3s vs ~17s.
     """
     url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses"
     body_dict = {
@@ -196,6 +201,8 @@ def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5",
         "instructions": instructions if instructions is not None else _SYSTEM,
         "input": prompt,
     }
+    if reasoning_effort:
+        body_dict["reasoning"] = {"effort": reasoning_effort}
     body_bytes = json.dumps(body_dict).encode()
 
     auth_failed = False

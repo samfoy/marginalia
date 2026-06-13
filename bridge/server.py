@@ -42,7 +42,6 @@ from book_finder import find_epub
 from epub_extract import extract_epub
 from xray_generator import generate, build_record
 import xray_cache
-import pi_session
 import mentions
 import rag
 import series
@@ -58,6 +57,9 @@ TOKEN      = os.environ.get("PIREAD_TOKEN", "")
 MAX_TOKENS = int(os.environ.get("PIREAD_MAX_TOKENS", 600))
 VAULT_ROOT = os.path.expanduser(os.environ.get("PIREAD_VAULT", "~/Documents/Sam"))
 BOOKS_DIR  = os.path.join(VAULT_ROOT, "Notes", "Books")
+# Reasoning effort for interactive companion calls (ask/recap/wiki/section).
+# 'low' is ~5x faster than default for short-prose tasks; X-Ray gen keeps full reasoning.
+COMPANION_EFFORT = os.environ.get("PIREAD_COMPANION_EFFORT", "low")
 
 # ── System prompts per mode ───────────────────────────────────────────────────
 
@@ -130,6 +132,12 @@ SECTION_INSTRUCTIONS = (
     "markdown. Do not reference anything outside this section or past the reader's "
     "position."
 )
+CHAT_INSTRUCTIONS = (
+    "You are Pi, a reading companion inside KOReader. The reader asks questions "
+    "about the book they are currently reading. Answer concisely (3–5 sentences) "
+    "using the provided book context and excerpts. Never reveal or hint at events "
+    "past the reader's current position. Plain prose, no markdown."
+)
 
 # ── Bedrock client ────────────────────────────────────────────────────────────
 
@@ -151,7 +159,8 @@ def ask_claude(text: str, context: str | None, book_title: str | None,
 
     if MODEL_ID.startswith("openai."):
         # GPT via bedrock-mantle: system → instructions, user → input
-        raw = _call_gpt(user_message, model_id=MODEL_ID, instructions=system)
+        raw = _call_gpt(user_message, model_id=MODEL_ID, instructions=system,
+                        reasoning_effort=COMPANION_EFFORT)
     else:
         # Anthropic via Bedrock invoke_model
         import boto3
@@ -526,13 +535,13 @@ class Handler(BaseHTTPRequestHandler):
                 "Relevant passages from earlier in the book (already read):\n" + rag_ctx
             )
         book_context = "\n\n".join(ctx_parts)
+        message = (book_context + "\n\nQuestion: " + question) if book_context else question
 
         try:
-            session = pi_session.get_session()
-            response_text = session.ask(question, book_context)
+            response_text = self._gpt_companion(CHAT_INSTRUCTIONS, message)
             self._send_json(200, {"response": response_text, "error": None})
         except Exception as exc:
-            logging.exception("pi_session /chat error")
+            logging.exception("/chat error")
             self._send_json(500, {"response": None, "error": str(exc)})
 
     # ── RAG helpers (position-bounded retrieval) ──────────────────────────────
@@ -567,7 +576,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _gpt_companion(self, instructions: str, user_message: str) -> str:
         from xray_generator import _call_gpt
-        return _call_gpt(user_message, model_id=MODEL_ID, instructions=instructions).strip()
+        return _call_gpt(user_message, model_id=MODEL_ID, instructions=instructions,
+                         reasoning_effort=COMPANION_EFFORT).strip()
 
     # ── /recap — spoiler-bounded "where you left off" ─────────────────────────
     def _handle_recap(self):
@@ -871,9 +881,6 @@ def main():
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     logging.info("piread-bridge listening on :%d  model=%s  profile=%s", PORT, MODEL_ID, PROFILE)
-
-    # Warm up the pi session in a background thread so the first /chat is fast
-    threading.Thread(target=pi_session.get_session, daemon=True).start()
 
     def _shutdown(sig, _frame):
         logging.info("Shutting down (signal %d)", sig)
