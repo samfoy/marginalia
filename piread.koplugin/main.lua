@@ -28,6 +28,7 @@ local Bridge    = require("bridge")
 local Cache     = require("piread_cache")
 local Context   = require("piread_context")
 local XRayUI    = require("piread_xray")
+local Queue     = require("piread_queue")
 
 local PiRead = WidgetContainer:extend{
     name = "piread",
@@ -169,6 +170,20 @@ end
 function PiRead:onDocLoad()
     local s = self:loadSettings()
     if not s.enabled then return end
+
+    -- Opportunistically flush any notes saved while offline.
+    if Queue.count() > 0 then
+        UIManager:scheduleIn(5, function()
+            self:flushNoteQueue(function(sent, remaining)
+                if sent > 0 then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("Pi: synced %1 saved note(s) to vault."), sent),
+                        timeout = 3,
+                    })
+                end
+            end)
+        end)
+    end
 
     local props  = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
     local title  = (props.title)   or ""
@@ -691,29 +706,65 @@ end
 
 function PiRead:saveHighlightNote(highlight_text, user_context)
     local props  = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
-    local book_title  = props.title   or ""
-    local book_author = props.authors or ""
-    local reading_pct = self:currentReadingPct()
+    local note = {
+        highlight   = highlight_text,
+        context     = (user_context and user_context ~= "") and user_context or nil,
+        book_title  = (props.title   and props.title   ~= "") and props.title   or nil,
+        book_author = (props.authors and props.authors ~= "") and props.authors or nil,
+        reading_pct = self:currentReadingPct(),
+    }
+    -- Durable: write to the local queue first so the note survives an offline
+    -- save or a mid-send crash. The flush removes it once the vault confirms.
+    Queue.enqueue(note)
+
+    if not NetworkMgr:isConnected() then
+        UIManager:show(InfoMessage:new{
+            text = _("Saved — will sync to vault when online."), timeout = 3 })
+        return
+    end
 
     local close_loading = self:showLoadingAnim(_("Saving to vault…"))
-
-    Bridge:noteAsync({
-        highlight   = highlight_text,
-        context     = user_context ~= "" and user_context or nil,
-        book_title  = book_title  ~= "" and book_title  or nil,
-        book_author = book_author ~= "" and book_author or nil,
-        reading_pct = reading_pct,
-    }, function(resp)
+    self:flushNoteQueue(function(sent, remaining)
         close_loading()
-        local msg = resp and resp.path
-            and T(_("Saved to vault"), resp.path)
-            or _("Saved to vault")
-        UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
-    end, function(err)
-        close_loading()
-        logger.warn("piread saveHighlightNote:", err)
-        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 5 })
+        if remaining > 0 then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Saved — %1 note(s) pending sync."), remaining), timeout = 4 })
+        else
+            UIManager:show(InfoMessage:new{ text = _("Saved to vault."), timeout = 3 })
+        end
     end)
+end
+
+-- Flush queued notes to the vault, oldest first. Sends each via the bridge and
+-- removes it from the queue on confirmation; stops on the first failure (the
+-- rest stay queued). Calls on_complete(sent_count, remaining_count).
+function PiRead:flushNoteQueue(on_complete)
+    if not NetworkMgr:isConnected() then
+        if on_complete then on_complete(0, Queue.count()) end
+        return
+    end
+    local notes = Queue.all()
+    if #notes == 0 then
+        if on_complete then on_complete(0, 0) end
+        return
+    end
+    local sent = {}
+    local function step(i)
+        if i > #notes then
+            Queue.removeIds(sent)
+            if on_complete then on_complete(#sent, Queue.count()) end
+            return
+        end
+        Bridge:noteAsync(notes[i], function(_resp)
+            sent[#sent + 1] = notes[i].id
+            step(i + 1)
+        end, function(err)
+            logger.warn("piread: note sync stopped at", i, ":", err)
+            Queue.removeIds(sent)
+            if on_complete then on_complete(#sent, Queue.count()) end
+        end)
+    end
+    step(1)
 end
 
 function PiRead:showChatDialog()
@@ -914,6 +965,29 @@ function PiRead:buildMenu()
                 return
             end
             self:requestXRay(title, author, self:currentReadingPct())
+        end,
+    })
+
+    -- Sync offline-saved notes
+    table.insert(items, {
+        text_func = function()
+            local n = Queue.count()
+            return n > 0 and T(_("Sync %1 pending note(s)"), n) or _("Notes: all synced")
+        end,
+        enabled_func = function() return Queue.count() > 0 end,
+        callback = function()
+            if not NetworkMgr:isConnected() then
+                UIManager:show(InfoMessage:new{ text = _("Not connected to network."), timeout = 3 })
+                return
+            end
+            self:flushNoteQueue(function(sent, remaining)
+                UIManager:show(InfoMessage:new{
+                    text = remaining > 0
+                        and T(_("Synced %1 — %2 still pending."), sent, remaining)
+                        or  T(_("Synced %1 note(s) to vault."), sent),
+                    timeout = 4,
+                })
+            end)
         end,
     })
 

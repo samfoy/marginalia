@@ -247,7 +247,7 @@ function Bridge:noteAsync(params, on_done, on_error)
         book_title  = params.book_title,
         book_author = params.book_author,
         reading_pct = params.reading_pct,
-    }, on_done, on_error)
+    }, on_done, on_error, { raw = true })
 end
 
 --- Async recap — "where you left off" (spoiler-bounded). on_done(text)/on_error(err).
