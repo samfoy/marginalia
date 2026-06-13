@@ -23,7 +23,6 @@ local ffi        = require("ffi")
 local Async = {}
 
 local POLL_INTERVAL = 1.5
-local MAX_POLLS     = 80    -- 120s max
 
 local ERR_MARKER = "PIREAD_ERR:"
 
@@ -122,6 +121,8 @@ function Async.post(url, body_table, on_done, on_error, opts)
     local poll_count = 0
     local cancelled  = false
     local completed  = false
+    local chunks     = {}                 -- accumulated response body across polls
+    local deadline   = os.time() + 130    -- wall-clock timeout (GPT calls can be slow)
 
     local function cleanup()
         if pid then
@@ -155,35 +156,44 @@ function Async.post(url, body_table, on_done, on_error, opts)
     local function poll()
         if cancelled then cleanup(); return end
         poll_count = poll_count + 1
-        dlog("poll #" .. poll_count)
 
-        local size = ffiutil.getNonBlockingReadSize(parent_read_fd)
-        local done = ffiutil.isSubProcessDone(pid)
-        dlog("size=" .. tostring(size) .. " done=" .. tostring(done))
+        -- Drain everything currently available. readAllFromFD returns available
+        -- bytes (not blocking to EOF), so large bodies (e.g. a 275 KB X-Ray) arrive
+        -- across several reads and MUST be accumulated, not decoded piecemeal.
+        local got = false
+        while true do
+            local size = ffiutil.getNonBlockingReadSize(parent_read_fd)
+            if not size or size <= 0 then break end
+            local part = ffiutil.readAllFromFD(parent_read_fd)
+            if part and #part > 0 then
+                chunks[#chunks + 1] = part
+                got = true
+            else
+                break
+            end
+        end
 
-        if size > 0 or done then
-            local raw = ffiutil.readAllFromFD(parent_read_fd) or ""
-
-            if raw:sub(1, #ERR_MARKER) == ERR_MARKER then
-                finish(nil, raw:sub(#ERR_MARKER + 1))
-                return
+        if ffiutil.isSubProcessDone(pid) then
+            -- Final sweep, then decode the full accumulated body.
+            while true do
+                local size = ffiutil.getNonBlockingReadSize(parent_read_fd)
+                if not size or size <= 0 then break end
+                local part = ffiutil.readAllFromFD(parent_read_fd)
+                if part and #part > 0 then chunks[#chunks + 1] = part else break end
             end
 
+            local raw = table.concat(chunks)
+            dlog("done; total_len=" .. #raw)
+
+            local mpos = raw:find(ERR_MARKER, 1, true)
+            if mpos then
+                finish(nil, raw:sub(mpos + #ERR_MARKER))
+                return
+            end
             if raw == "" then
-                if done then
-                    finish(nil, "empty response")
-                else
-                    -- No data yet and not done — keep polling
-                    if poll_count < MAX_POLLS then
-                        UIManager:scheduleIn(POLL_INTERVAL, poll)
-                    else
-                        finish(nil, "timeout")
-                    end
-                end
+                finish(nil, "empty response")
                 return
             end
-
-            -- Parse JSON response
             local resp, decode_err = rapidjson.decode(raw)
             if not resp then
                 finish(nil, "decode error: " .. (decode_err or raw:sub(1, 80)))
@@ -195,12 +205,13 @@ function Async.post(url, body_table, on_done, on_error, opts)
             return
         end
 
-        -- Still waiting
-        if poll_count >= MAX_POLLS then
+        if os.time() > deadline then
             finish(nil, "timeout")
             return
         end
-        UIManager:scheduleIn(POLL_INTERVAL, poll)
+        -- Pull remaining data fast while it's flowing; wait longer when idle
+        -- (e.g. while the bridge/GPT is still thinking).
+        UIManager:scheduleIn(got and 0.1 or POLL_INTERVAL, poll)
     end
 
     UIManager:scheduleIn(POLL_INTERVAL, poll)
