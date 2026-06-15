@@ -11,6 +11,9 @@ Routes:
   POST /xray/init             find book in Calibre, generate X-Ray, cache it
   POST /xray/progress         update reading position for a cached book
 
+  GET  /monitor               live request-monitor dashboard (HTML)
+  GET  /monitor/data          monitor snapshot (JSON, polled by the dashboard)
+
 Config via environment variables (all optional):
   PIREAD_PORT         TCP port to listen on           (default: 7731)
   PIREAD_AWS_PROFILE  AWS credentials profile          (default: openclaw-bedrock)
@@ -21,6 +24,7 @@ Config via environment variables (all optional):
   PIREAD_VAULT        Obsidian vault root              (default: ~/Documents/Sam)
 """
 
+import io
 import json
 import logging
 import os
@@ -45,6 +49,7 @@ import xray_cache
 import mentions
 import rag
 import series
+import monitor
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -388,8 +393,33 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # redirect to Python logging
         logging.info("HTTP %s", fmt % args)
 
-    # ── GET /ping ──────────────────────────────────────────────────────────────
+    def send_response(self, code, message=None):  # capture status for the monitor
+        self._status = code
+        super().send_response(code, message)
+
+    # ── GET dispatch (with request monitoring) ──────────────────────────────────
     def do_GET(self):
+        # Monitor pages are served directly and never self-tracked.
+        if self.path == "/monitor":
+            self._send(200, monitor.render_html().encode(), "text/html; charset=utf-8")
+            return
+        if self.path == "/monitor/data":
+            data = monitor.snapshot()
+            data["model"] = MODEL_ID
+            data["effort"] = COMPANION_EFFORT
+            data["books_cached"] = len(xray_cache.load_index().get("books", {}))
+            self._send_json(200, data)
+            return
+
+        rec = monitor.begin("GET", self.path, monitor.detail_for_get(self.path)) \
+            if monitor.should_track(self.path) else None
+        try:
+            self._dispatch_get()
+        finally:
+            if rec:
+                monitor.end(rec, getattr(self, "_status", 200))
+
+    def _dispatch_get(self):
         if self.path == "/ping":
             self._send(200, b"pong", "text/plain")
         elif self.path == "/index":
@@ -421,8 +451,25 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
-    # ── POST dispatch ─────────────────────────────────────────────────────────
+    # ── POST dispatch (with request monitoring) ─────────────────────────────────
     def do_POST(self):
+        # Read the body once so the monitor can label the request (which book /
+        # entity / %); replay it to the handlers via an in-memory buffer.
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length > 0 else b""
+        original_rfile = self.rfile
+        self.rfile = io.BytesIO(raw)
+
+        rec = monitor.begin("POST", self.path, monitor.detail_for_post(self.path, raw)) \
+            if monitor.should_track(self.path) else None
+        try:
+            self._dispatch_post()
+        finally:
+            self.rfile = original_rfile
+            if rec:
+                monitor.end(rec, getattr(self, "_status", 200))
+
+    def _dispatch_post(self):
         if self.path == "/xray/init":
             self._handle_xray_init()
             return
