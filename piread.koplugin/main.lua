@@ -18,6 +18,7 @@ local NetworkMgr       = require("ui/network/manager")
 local Screen = require("device").screen
 local TextViewer       = require("ui/widget/textviewer")
 local UIManager        = require("ui/uimanager")
+local Event            = require("ui/event")
 local WidgetContainer  = require("ui/widget/container/widgetcontainer")
 local logger           = require("logger")
 local util             = require("util")
@@ -51,6 +52,8 @@ local DEFAULT_SETTINGS = {
     token   = "",
     enabled = true,
     spoiler_free = true,    -- hide characters/events past reading position
+    auto_capture = true,    -- on a successful Ask Pi lookup, highlight the passage
+                            -- (note = Pi's answer) and save it to the Obsidian note
 }
 
 -- ── Settings ──────────────────────────────────────────────────────────────────
@@ -567,6 +570,16 @@ function PiRead:hookHighlightDialog()
                 local book_title  = props.title   or ""
                 local book_author = props.authors or ""
 
+                -- Capture the selection geometry now, before onClose clears it, so a
+                -- successful lookup can highlight the passage + attach Pi's answer.
+                local captured = {
+                    pos0 = sel.pos0, pos1 = sel.pos1,
+                    text = text,
+                    drawer = sel.drawer, color = sel.color,
+                    datetime = sel.datetime,
+                    pboxes = sel.pboxes, ext = sel.ext,
+                }
+
                 -- First: check if this word is in the local X-Ray cache
                 if self._xray then
                     local kind, entity = XRayUI.lookup(self._xray, text)
@@ -591,7 +604,7 @@ function PiRead:hookHighlightDialog()
 
                 -- Not in cache — ask bridge
                 this:onClose()
-                self:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author)
+                self:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author, captured)
             end,
         }
     end)
@@ -649,14 +662,14 @@ local MODES = {
     { id = "translate", label = _("Translate to English") },
 }
 
-function PiRead:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author)
+function PiRead:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author, captured)
     local buttons = {}
     for _, mode in ipairs(MODES) do
         local mid, mlabel = mode.id, mode.label
         table.insert(buttons, {{ text = mlabel, callback = function()
             UIManager:close(self._mode_dialog)
             self._mode_dialog = nil
-            self:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mid, mlabel)
+            self:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mid, mlabel, captured)
         end }})
     end
     table.insert(buttons, {{ text = _("Cancel"), callback = function()
@@ -674,7 +687,7 @@ end
 
 -- ── Ask bridge (conversational) ───────────────────────────────────────────────
 
-function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mode_id, mode_label)
+function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mode_id, mode_label, captured)
     local close_loading = self:showLoadingAnim(_("Asking Pi"))
 
     local ctx = ""
@@ -695,11 +708,79 @@ function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mod
             width  = math.floor(Screen:getWidth()  * 0.92),
             height = math.floor(Screen:getHeight() * 0.78),
         })
+        -- Highlight the passage + save to the Obsidian note (if auto-capture on).
+        self:captureLookup(captured, mode_label, mode_id, text,
+                           ctx ~= "" and ctx or nil, response, book_title, book_author)
     end, function(err)
         close_loading()
         logger.warn("piread ask:", err)
         UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
     end)
+end
+
+-- ── Capture a lookup: highlight in book + Obsidian note ─────────────────────────
+
+-- Create a saved highlight at the captured selection with Pi's answer as its
+-- note. Mirrors ReaderHighlight:saveHighlight but builds the annotation item
+-- from the captured geometry (the live selection is already closed). Returns
+-- true on success.
+function PiRead:createHighlightWithNote(captured, label, answer)
+    local rh = self.ui.highlight
+    if not (rh and self.ui.annotation and captured and captured.pos0 and captured.pos1) then
+        return false
+    end
+    local note = "\u{1F916} Pi" .. (label and (" · " .. label) or "") .. "\n\n" .. (answer or "")
+    local pg_or_xp = self.ui.rolling and captured.pos0 or (captured.pos0 and captured.pos0.page)
+    local item = {
+        page     = self.ui.paging and (captured.pos0 and captured.pos0.page) or captured.pos0,
+        pos0     = captured.pos0,
+        pos1     = captured.pos1,
+        text     = captured.text,
+        drawer   = captured.drawer or (rh.view and rh.view.highlight.saved_drawer),
+        color    = captured.color  or (rh.view and rh.view.highlight.saved_color),
+        note     = note,
+        chapter  = (self.ui.toc and pg_or_xp) and self.ui.toc:getTocTitleByPage(pg_or_xp) or nil,
+    }
+    if self.ui.paging then
+        item.pboxes = captured.pboxes
+        item.ext    = captured.ext
+        pcall(function() rh:writePdfAnnotation("save", item) end)
+    end
+    local ok, index = pcall(function() return self.ui.annotation:addItem(item) end)
+    if not ok or not index then
+        logger.warn("piread: addItem failed:", index)
+        return false
+    end
+    pcall(function() rh.view.footer:maybeUpdateFooter() end)
+    self.ui:handleEvent(Event:new("AnnotationsModified",
+        { item, nb_highlights_added = 1, index_modified = index }))
+    return true
+end
+
+-- Highlight the looked-up passage and persist the passage + question + answer
+-- to the book's Obsidian note. No-op unless auto_capture is enabled.
+function PiRead:captureLookup(captured, mode_label, mode_id, query, context, response, book_title, book_author)
+    local s = self:loadSettings()
+    if not s.auto_capture then return end
+    if not (response and response ~= "") then return end
+
+    pcall(function() self:createHighlightWithNote(captured, mode_label, response) end)
+
+    local note = {
+        highlight   = (captured and captured.text) or query,
+        context     = (context and context ~= "") and context or nil,
+        query       = query,
+        response    = response,
+        mode        = mode_label,
+        source      = "Ask Pi",
+        book_title  = (book_title and book_title ~= "") and book_title or nil,
+        book_author = (book_author and book_author ~= "") and book_author or nil,
+        reading_pct = self:currentReadingPct(),
+    }
+    Queue.enqueue(note)
+    if NetworkMgr:isConnected() then
+        self:flushNoteQueue(function() end)
+    end
 end
 
 -- ── Save highlight + optional context to Obsidian vault via bridge ─────────────
@@ -930,6 +1011,19 @@ function PiRead:buildMenu()
         callback = function()
             local s = self:loadSettings(); s.spoiler_free = not s.spoiler_free; self:saveSettings(s)
         end,
+    })
+
+    -- Auto-capture lookups (highlight + Obsidian note)
+    table.insert(items, {
+        text_func = function()
+            return T(_("Auto-capture lookups: %1"), self:loadSettings().auto_capture and _("on") or _("off"))
+        end,
+        checked_func = function() return self:loadSettings().auto_capture end,
+        callback = function()
+            local s = self:loadSettings(); s.auto_capture = not s.auto_capture; self:saveSettings(s)
+        end,
+        help_text = _("When on, a successful Ask Pi lookup highlights the passage "
+            .. "(note = Pi's answer) and saves the passage + answer to the book's Obsidian note."),
     })
 
     -- Bridge host

@@ -172,11 +172,16 @@ def ask_claude(text: str, context: str | None, book_title: str | None,
 def _save_vault_note(
     highlight: str, context: str,
     book_title: str, book_author: str, reading_pct: float,
+    query: str | None = None, response: str | None = None,
+    mode: str | None = None, source: str | None = None,
 ) -> str:
     """
     Append a highlight + optional context to the book's Obsidian vault note.
     File: BOOKS_DIR/<Author> - <Title>.md
     Creates the file with frontmatter if it doesn't exist.
+
+    When `response` is provided (a captured Pi lookup), the entry also records
+    what was asked and Pi's answer, labelled by source/mode.
     Returns the absolute path written.
     """
     from datetime import datetime
@@ -191,12 +196,30 @@ def _save_vault_note(
                 if book_author else f"{safe(book_title)}.md")
     filepath = os.path.join(BOOKS_DIR, filename)
 
-    # Build bullet
+    # Build bullet. A multi-line value (Pi's prose answer) is indented so it
+    # stays part of the Markdown list item.
+    def _block(prefix: str, text: str) -> list[str]:
+        parts = text.strip().split("\n")
+        out = [f"  {prefix}{parts[0]}"]
+        out += [f"  {ln}" if ln.strip() else "" for ln in parts[1:]]
+        return out
+
     date_str  = datetime.now().strftime("%Y-%m-%d")
     pct_tag   = f" ({int(reading_pct)}%)" if reading_pct else ""
-    lines     = [f"- {date_str}{pct_tag}:", f"  > {highlight}"]
+    label     = ""
+    label_bits = [b for b in (source, mode) if b]
+    if label_bits:
+        label = " — " + " · ".join(label_bits)
+    lines     = [f"- {date_str}{pct_tag}{label}:"]
+    if highlight:
+        lines.append(f"  > {highlight}")
     if context:
-        lines += ["", f"  {context}"]
+        lines += [""] + _block("", context)
+    # Only echo the query if it differs from the highlighted text (avoids dupes).
+    if query and query.strip() and query.strip() != (highlight or "").strip():
+        lines += [""] + _block("**Asked:** ", query)
+    if response and response.strip():
+        lines += [""] + _block("**Pi:** ", response)
     bullet = "\n".join(lines)
 
     # Read or create
@@ -854,8 +877,14 @@ class Handler(BaseHTTPRequestHandler):
         book_title = (req.get("book_title") or "").strip()
         book_author = (req.get("book_author") or "").strip()
         reading_pct = req.get("reading_pct") or 0
+        query      = (req.get("query") or "").strip() or None
+        response   = (req.get("response") or "").strip() or None
+        mode       = (req.get("mode") or "").strip() or None
+        source     = (req.get("source") or "").strip() or None
 
-        if not highlight:
+        # A captured lookup may have no highlight text of its own; require at
+        # least a highlight OR a response to anchor the note.
+        if not highlight and not response:
             self.send_error(400, "Missing highlight"); return
         if not book_title:
             self.send_error(400, "Missing book_title"); return
@@ -867,6 +896,10 @@ class Handler(BaseHTTPRequestHandler):
                 book_title=book_title,
                 book_author=book_author,
                 reading_pct=reading_pct,
+                query=query,
+                response=response,
+                mode=mode,
+                source=source,
             )
             self._send_json(200, {"ok": True, "path": path})
         except Exception as exc:
