@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,6 +38,16 @@ REGION            = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
 MODEL_ID          = os.environ.get("PIREAD_MODEL_ID",          "openai.gpt-5.5")
 FALLBACK_MODEL_ID = os.environ.get("PIREAD_FALLBACK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 CHUNK_MODEL_ID    = os.environ.get("PIREAD_CHUNK_MODEL_ID",    MODEL_ID)
+
+# Ordered model fallback chain. Each call tries models left-to-right, dropping to
+# the next on any failure (5xx / empty completion / network). Default derives from
+# the primary model → gpt-5.4 → Sonnet (Bedrock). A model that just failed is skipped
+# for MODEL_COOLDOWN_S so a known-down model (e.g. a gpt-5.5 outage) doesn't cost a
+# failed call on every request — it's re-probed once the cooldown lapses (auto-recovery).
+MODEL_CHAIN_ENV  = os.environ.get("PIREAD_MODEL_CHAIN", "")
+MODEL_COOLDOWN_S = float(os.environ.get("PIREAD_MODEL_COOLDOWN_S", "120"))
+_model_failures: dict[str, float] = {}
+_failures_lock   = threading.Lock()
 MAX_TOKENS        = int(os.environ.get("PIREAD_XRAY_MAX_TOKENS", "16384"))
 MAX_PARALLEL_CHUNKS = int(os.environ.get("PIREAD_MAX_PARALLEL_CHUNKS", "4"))
 
@@ -238,14 +249,12 @@ def _call_gpt(prompt: str, model_id: str = "openai.gpt-5.5",
     )
 
 
-def _call(prompt: str, model_id: str = MODEL_ID) -> str:
-    """Route to the right API based on model prefix."""
-    if model_id.startswith("openai."):
-        return _call_gpt(prompt, model_id)
+def _invoke_bedrock(prompt: str, model_id: str, instructions: str | None = None) -> str:
+    """One Anthropic-on-Bedrock attempt (invoke_model). Raises on failure."""
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": MAX_TOKENS,
-        "system": _SYSTEM,
+        "system": instructions if instructions is not None else _SYSTEM,
         "messages": [{"role": "user", "content": prompt}],
     }
     resp = _client().invoke_model(
@@ -254,8 +263,70 @@ def _call(prompt: str, model_id: str = MODEL_ID) -> str:
         contentType="application/json",
         accept="application/json",
     )
-    result = json.loads(resp["body"].read())
-    return result["content"][0]["text"]
+    return json.loads(resp["body"].read())["content"][0]["text"]
+
+
+def _invoke_one(prompt: str, model_id: str, instructions: str | None = None,
+                reasoning_effort: str | None = None) -> str:
+    """Single attempt against one model, routed by id prefix. Raises on failure."""
+    if model_id.startswith("openai."):
+        return _call_gpt(prompt, model_id, instructions=instructions,
+                         reasoning_effort=reasoning_effort)
+    return _invoke_bedrock(prompt, model_id, instructions=instructions)
+
+
+def model_chain(primary: str | None = None) -> list[str]:
+    """Ordered fallback chain. Explicit via PIREAD_MODEL_CHAIN, else derived:
+    primary (default MODEL_ID) → openai.gpt-5.4 → Sonnet, de-duplicated."""
+    if MODEL_CHAIN_ENV.strip():
+        chain = [m.strip() for m in MODEL_CHAIN_ENV.split(",") if m.strip()]
+    else:
+        chain = []
+        for m in (primary or MODEL_ID, "openai.gpt-5.4", FALLBACK_MODEL_ID):
+            if m and m not in chain:
+                chain.append(m)
+    return chain
+
+
+def _complete(prompt: str, instructions: str | None = None,
+              reasoning_effort: str | None = None, primary: str | None = None) -> str:
+    """Run the model fallback chain and return the first successful output.
+
+    Drops to the next model on any error (5xx / empty completion / network).
+    Models that failed within MODEL_COOLDOWN_S are skipped (circuit breaker),
+    unless every model is cooling down — then the full chain is tried anyway.
+    """
+    full = model_chain(primary)
+    now = time.time()
+    with _failures_lock:
+        active = [m for m in full if now - _model_failures.get(m, 0) > MODEL_COOLDOWN_S]
+    chain = active or full
+    skipped = [m for m in full if m not in chain]
+    if skipped:
+        logger.info("model chain: skipping cooling-down %s", ", ".join(skipped))
+
+    errors = []
+    for i, model_id in enumerate(chain):
+        try:
+            text = _invoke_one(prompt, model_id, instructions=instructions,
+                               reasoning_effort=reasoning_effort)
+            with _failures_lock:
+                _model_failures.pop(model_id, None)  # clear on success
+            if i > 0 or skipped:
+                logger.warning("model chain: recovered on %s; prior failures: %s",
+                               model_id, " | ".join(errors) or "(none, skipped cooling-down)")
+            return text
+        except Exception as exc:
+            with _failures_lock:
+                _model_failures[model_id] = time.time()
+            logger.warning("model %s failed: %s", model_id, exc)
+            errors.append(f"{model_id}: {type(exc).__name__}: {str(exc)[:120]}")
+    raise RuntimeError("all models in chain failed (" + "; ".join(errors) + ")")
+
+
+def _call(prompt: str, model_id: str = MODEL_ID) -> str:
+    """Route to the right API based on model prefix, with chain fallback."""
+    return _complete(prompt, primary=model_id)
 
 
 # ── JSON parsing + repair ──────────────────────────────────────────────────────
@@ -720,7 +791,7 @@ def _gpt_single_shot(content: "EpubContent") -> tuple:
     text, n = _annotated_text(content.chapters)
     logger.info("  annotated text: %d chars", n)
     prompt = _full_prompt(content.title, content.author, text, _series_tag(content))
-    raw  = _call_gpt(prompt)
+    raw  = _complete(prompt)
     xray = _normalize(_parse(raw))
     logger.info(
         "GPT X-Ray: %d characters | %d locations | %d themes | %d timeline_events",

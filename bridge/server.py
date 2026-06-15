@@ -38,7 +38,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 
-import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -55,7 +54,6 @@ import monitor
 
 PORT       = int(os.environ.get("PIREAD_PORT", 7731))
 PROFILE    = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
-REGION     = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
 # server.py uses Sonnet for /ask and knowledge-only X-Ray — never GPT (no Bedrock invoke_model support)
 MODEL_ID   = os.environ.get("PIREAD_MODEL_ID", "openai.gpt-5.5")
 TOKEN      = os.environ.get("PIREAD_TOKEN", "")
@@ -148,7 +146,7 @@ CHAT_INSTRUCTIONS = (
 
 def ask_claude(text: str, context: str | None, book_title: str | None,
                book_author: str | None, mode: str) -> str:
-    from xray_generator import _call, _call_gpt
+    from xray_generator import _complete
     system = SYSTEM_PROMPTS.get(mode, DEFAULT_SYSTEM)
 
     parts: list[str] = []
@@ -162,24 +160,9 @@ def ask_claude(text: str, context: str | None, book_title: str | None,
     parts.append(f"Selected text: {text}")
     user_message = "\n\n".join(parts)
 
-    if MODEL_ID.startswith("openai."):
-        # GPT via bedrock-mantle: system → instructions, user → input
-        raw = _call_gpt(user_message, model_id=MODEL_ID, instructions=system,
-                        reasoning_effort=COMPANION_EFFORT)
-    else:
-        # Anthropic via Bedrock invoke_model
-        import boto3
-        session = boto3.Session(profile_name=PROFILE, region_name=REGION)
-        client  = session.client("bedrock-runtime")
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": MAX_TOKENS,
-            "system": system,
-            "messages": [{"role": "user", "content": user_message}],
-        }
-        resp   = client.invoke_model(modelId=MODEL_ID, body=json.dumps(body),
-                                     contentType="application/json", accept="application/json")
-        raw = json.loads(resp["body"].read())["content"][0]["text"]
+    # Model fallback chain (gpt-5.5 → gpt-5.4 → Sonnet) handles outages/empties.
+    raw = _complete(user_message, instructions=system,
+                    reasoning_effort=COMPANION_EFFORT)
     return raw.strip()
 
 
@@ -622,8 +605,8 @@ class Handler(BaseHTTPRequestHandler):
             return ""
 
     def _gpt_companion(self, instructions: str, user_message: str) -> str:
-        from xray_generator import _call_gpt
-        return _call_gpt(user_message, model_id=MODEL_ID, instructions=instructions,
+        from xray_generator import _complete
+        return _complete(user_message, instructions=instructions,
                          reasoning_effort=COMPANION_EFFORT).strip()
 
     # ── /recap — spoiler-bounded "where you left off" ─────────────────────────
