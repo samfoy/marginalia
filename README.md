@@ -4,6 +4,8 @@ AI reading companion for KOReader — Book Index, position-bounded RAG, highligh
 
 > Like Kindle X-Ray, but for any book, any e-reader, any LLM, with your own Obsidian vault as the note backend.
 
+**[→ First-time setup guide](docs/setup.md)** · [AI providers](docs/providers.md) · [Calibre](docs/calibre.md) · [Obsidian](docs/obsidian.md)
+
 ---
 
 ## What it does
