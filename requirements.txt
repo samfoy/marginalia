@@ -1,0 +1,15 @@
+# Core (always required)
+numpy
+
+# AWS Bedrock (required if using Bedrock or bedrock-mantle)
+boto3>=1.28
+botocore>=1.31
+
+# OpenAI direct API (required if MARGINALIA_OPENAI_API_KEY is set)
+openai>=1.0
+
+# Anthropic direct API (required if MARGINALIA_ANTHROPIC_API_KEY is set)
+anthropic>=0.20
+
+# Local embeddings (required if MARGINALIA_EMBED_BACKEND=local or no API keys)
+sentence-transformers>=2.0

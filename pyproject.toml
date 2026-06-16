@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marginalia"
+version = "0.6.0"
+description = "AI reading companion: Book Index, RAG, highlights, and Obsidian notes for KOReader"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["koreader", "reading", "ai", "obsidian", "ebook", "calibre"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Text Processing",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: MacOS",
+]
+
+# Only numpy is unconditionally required; all LLM/embedding deps are optional
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+openai    = ["openai>=1.0"]
+anthropic = ["anthropic>=0.20"]
+bedrock   = ["boto3>=1.28", "botocore>=1.31"]
+embed     = ["sentence-transformers>=2.0"]
+all       = [
+    "marginalia[openai,anthropic,bedrock,embed]",
+]
+
+[project.scripts]
+marginalia = "bridge.cli:main"
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["bridge*"]
+
+[tool.setuptools.package-data]
+bridge = ["*.py"]
