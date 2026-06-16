@@ -650,11 +650,15 @@ function PiRead:hookHighlightDialog()
                                 local user_context = dialog:getInputText() or ""
                                 UIManager:close(dialog)
                                 this:onClose()
-                                -- Create the in-book highlight (note = user context if provided).
-                                pcall(function()
-                                    self:createHighlightWithNote(
-                                        captured, nil,
-                                        user_context ~= "" and user_context or nil)
+                                -- Defer highlight creation so the dialog close
+                                -- fully settles before addItem fires (same
+                                -- reason we defer the async vault flush).
+                                UIManager:scheduleIn(0.1, function()
+                                    pcall(function()
+                                        self:createHighlightWithNote(
+                                            captured, nil,
+                                            user_context ~= "" and user_context or nil)
+                                    end)
                                 end)
                                 self:saveHighlightNote(highlight_text, user_context)
                             end,
