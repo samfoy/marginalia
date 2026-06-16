@@ -622,6 +622,14 @@ function PiRead:hookHighlightDialog()
 
                 local highlight_text = util.cleanupSelectedText(sel.text)
 
+                -- Capture geometry now — onClose() will clear the live selection.
+                local captured = {
+                    pos0 = sel.pos0, pos1 = sel.pos1,
+                    text = highlight_text,
+                    drawer = sel.drawer, color = sel.color,
+                    pboxes = sel.pboxes, ext = sel.ext,
+                }
+
                 -- Show optional context input dialog
                 local dialog
                 dialog = InputDialog:new{
@@ -642,6 +650,12 @@ function PiRead:hookHighlightDialog()
                                 local user_context = dialog:getInputText() or ""
                                 UIManager:close(dialog)
                                 this:onClose()
+                                -- Create the in-book highlight (note = user context if provided).
+                                pcall(function()
+                                    self:createHighlightWithNote(
+                                        captured, nil,
+                                        user_context ~= "" and user_context or nil)
+                                end)
                                 self:saveHighlightNote(highlight_text, user_context)
                             end,
                         },
@@ -729,7 +743,14 @@ function PiRead:createHighlightWithNote(captured, label, answer)
     if not (rh and self.ui.annotation and captured and captured.pos0 and captured.pos1) then
         return false
     end
-    local note = "\u{1F916} Pi" .. (label and (" · " .. label) or "") .. "\n\n" .. (answer or "")
+    local note
+    if answer and answer ~= "" then
+        note = "\u{1F916} Pi" .. (label and (" · " .. label) or "") .. "\n\n" .. answer
+    elseif label and label ~= "" then
+        note = label   -- manual save: just the user's context
+    else
+        note = nil     -- plain highlight, no note
+    end
     local pg_or_xp = self.ui.rolling and captured.pos0 or (captured.pos0 and captured.pos0.page)
     local item = {
         page     = self.ui.paging and (captured.pos0 and captured.pos0.page) or captured.pos0,
@@ -778,8 +799,14 @@ function PiRead:captureLookup(captured, mode_label, mode_id, query, context, res
         reading_pct = self:currentReadingPct(),
     }
     Queue.enqueue(note)
+    -- Defer the flush so it doesn't race the just-finished /ask subprocess
+    -- teardown — overlapping forks can drop the tiny /note response, yielding a
+    -- false "empty response" that leaves the note queued and double-saves on the
+    -- next book-open auto-flush. The queue is durable, so this only delays sync.
     if NetworkMgr:isConnected() then
-        self:flushNoteQueue(function() end)
+        UIManager:scheduleIn(2.5, function()
+            self:flushNoteQueue(function() end)
+        end)
     end
 end
 

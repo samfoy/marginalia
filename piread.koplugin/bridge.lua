@@ -239,15 +239,61 @@ function Bridge:chatAsync(params, on_done, on_error)
     return Async.post(self:url("/chat"), payload, on_done, on_error)
 end
 
---- Async save-to-vault — POST /note. Calls on_done(resp_table) or on_error(err).
+--- Save-to-vault — POST /note. Calls on_done(resp_table) or on_error(err).
+-- Uses a SHORT BLOCKING request, not the fork (Async): the note flush often runs
+-- concurrently with the /xray/init subprocess on book-open, and forked siblings
+-- cross-talk through inherited pipe FDs — the note latches onto the X-Ray
+-- subprocess's 200 JSON (no error field → false success), clearing the queue while
+-- the real POST never goes out. Notes are tiny, so a brief blocking call is safe.
 function Bridge:noteAsync(params, on_done, on_error)
-    return Async.post(self:url("/note"), {
+    local body = {
         highlight   = params.highlight,
         context     = params.context,
         book_title  = params.book_title,
         book_author = params.book_author,
         reading_pct = params.reading_pct,
-    }, on_done, on_error, { raw = true })
+        query       = params.query,
+        response    = params.response,
+        mode        = params.mode,
+        source      = params.source,
+    }
+    if self.token and self.token ~= "" then body.token = self.token end
+    local body_json, enc_err = rapidjson.encode(body)
+    if not body_json then
+        if on_error then on_error("encode: " .. (enc_err or "?")) end
+        return
+    end
+    logger.warn("piread DBG noteAsync: POST " .. self:url("/note") .. " bytes=" .. tostring(#body_json))
+    local sink = {}
+    socketutil:set_timeout(4, 7)
+    local ok, code = http.request({
+        url     = self:url("/note"),
+        method  = "POST",
+        source  = ltn12.source.string(body_json),
+        sink    = ltn12.sink.table(sink),
+        headers = {
+            ["Content-Type"]   = "application/json",
+            ["Content-Length"] = tostring(#body_json),
+        },
+    })
+    socketutil:reset_timeout()
+    if not ok then
+        if on_error then on_error("network: " .. tostring(code)) end
+        return
+    end
+    if code ~= 200 then
+        if on_error then on_error("HTTP " .. tostring(code)) end
+        return
+    end
+    local resp, derr = rapidjson.decode(table.concat(sink))
+    if not resp then
+        if on_error then on_error("decode: " .. (derr or "?")) end
+    elseif type(resp.error) == "string" and resp.error ~= "" then
+        if on_error then on_error(resp.error) end
+    else
+        logger.info("piread: note synced to vault", resp.path or "")
+        if on_done then on_done(resp) end
+    end
 end
 
 --- Async recap — "where you left off" (spoiler-bounded). on_done(text)/on_error(err).

@@ -42,7 +42,12 @@ end
 
 local function write(notes)
     ensureDir()
-    local ok, enc = pcall(rapidjson.encode, { notes = notes })
+    -- Rebuild as a fresh integer-keyed array so rapidjson always encodes as []
+    -- not {}. A table decoded from JSON {} carries an object flag; adding integer
+    -- keys doesn't clear it, so re-encoding silently drops the elements back to {}.
+    local arr = {}
+    for i = 1, #notes do arr[i] = notes[i] end
+    local ok, enc = pcall(rapidjson.encode, { notes = arr })
     if not ok then
         logger.warn("piread_queue: encode error:", enc)
         return false
@@ -62,8 +67,8 @@ function Queue.enqueue(note)
     note.id = note.id or string.format("%d-%04d", os.time(), math.random(0, 9999))
     note.ts = note.ts or os.time()
     notes[#notes + 1] = note
-    write(notes)
-    logger.info("piread_queue: enqueued note", note.id, "queue size", #notes)
+    local okw = write(notes)
+    logger.info("piread_queue: enqueued note", note.id, "queue size", #notes, "written", tostring(okw))
     return note.id
 end
 
