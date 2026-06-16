@@ -1,121 +1,250 @@
-# piread
+# marginalia
 
-AI-powered reading assistant for KOReader, backed by your local Mac via [pi](https://github.com/earendil-works/pi).
+AI reading companion for KOReader — Book Index, position-bounded RAG, highlights, and Obsidian notes.
 
-Generates rich **X-Ray entity graphs** (characters, locations, references, timeline) from your full Calibre library. Opens a contextual **"Now Reading" dashboard** showing who's on this page, where you are, and what literary/historical references the author is drawing on — without highlighting anything. Ask Pi conversational questions about the text.
-
-Everything runs on your Mac. No external API keys. No cloud. Uses Claude via AWS Bedrock (the same credentials pi uses).
+> Like Kindle X-Ray, but for any book, any e-reader, any LLM, with your own Obsidian vault as the note backend.
 
 ---
 
 ## What it does
 
-| Feature | How |
-|---------|-----|
-| **X-Ray** | Characters with aliases + first-appearance tracking, locations, terms, literary/historical/mythological references, plot timeline | From your full Calibre EPUB |
-| **Now Reading dashboard** | Who's on this page/chapter, what places and references appear here | Offline scan of cached X-Ray |
-| **Conversational queries** | Highlight text → "Who is this?", "Explain this passage", "Story so far", "Translate" | Live Bedrock call |
-| **Spoiler-free mode** | Hide characters/events past your current reading position | Structural filtering |
-| **Series context** | Characters from earlier books pre-loaded when you open a sequel | Cross-book X-Ray merge |
-| **Ambient pi chat** | Ask pi "who is Sevro?" or "what happened in Red Rising?" outside KOReader | `~/.piread/cache/` index |
+marginalia runs a small bridge server on your Mac that your KOReader device talks to over your local network (or Tailscale). When you open a book, it:
 
-## Architecture
+1. **Generates a Book Index** — characters, locations, terms, literary/mythological references, and a chapter-positioned timeline, extracted from the full EPUB text via your LLM of choice. Cached locally. Falls back to model knowledge if the EPUB isn't in Calibre.
+2. **Builds a RAG index** — chunks the book text, embeds it, and stores a position-aware retrieval index so every AI answer is grounded in passages *you've already read*. No spoilers by construction.
+3. **Syncs with your Obsidian vault** — Ask AI lookups and manual saves create highlights in the book and append formatted entries to the book's vault note.
 
-```
-KOReader (Palma / Kindle / any device)
-  └── piread.koplugin
-        ├── On book open  → POST /xray/init  (returns in <100ms from cache)
-        ├── Now Reading   → offline scan of local X-Ray cache
-        ├── Highlight     → POST /ask        (explain / translate / who is this)
-        └── Polls         → GET  /xray/status/<job_id>  (30s interval while generating)
+**Companion features (all spoiler-safe):**
+- **Ask AI** — select text → get an explanation, translation, or context from the bridge
+- **AI Wiki** — deep-dive on any character, place, or term from the Book Index
+- **Recap** — "where you left off" summary when returning after a break
+- **Section** — chapter-by-chapter analysis
+- **Chat** — free Q&A grounded in your reading position
+- **Series intelligence** — cross-book context includes prior books you've finished; future books are excluded
 
-piread-bridge (your Mac, port 7731)
-  ├── Finds book in ~/CalibreLibrary (fuzzy title+author match)
-  ├── Extracts full EPUB text (zipfile, no ebook-convert needed)
-  ├── Calls Claude via AWS Bedrock (same profile as pi)
-  └── Caches at ~/.piread/cache/<hash>.json
+**Capture:**
+- Ask AI and AI: Save Note both create a saved highlight in KOReader (with the AI answer or your context as the highlight note) and append the passage + answer to the book's Obsidian note.
 
-pi chat
-  └── Reads ~/.piread/cache/index.json for ambient book queries
-```
+**Ops:**
+- Live request monitor at `http://localhost:7731/monitor`
+- Intelligent fallback chain: primary model → cheaper fallback → terminal fallback, with a per-model circuit breaker that skips recently-failed models and re-probes automatically
+
+---
 
 ## Requirements
 
-- **Mac**: Python 3.10+, `boto3`, AWS Bedrock access (us.anthropic.claude-sonnet-4-6)
-- **Device**: KOReader (any platform)
-- **Same WiFi network** (or Tailscale)
-- Calibre library at `~/CalibreLibrary` with EPUBs
+- **Mac** (macOS 12+) — the bridge runs here
+- **Python 3.11+**
+- **KOReader** on an Android/Boox device, Kindle, or any device that runs it
+- **Calibre** (optional but recommended — without it, Book Index uses model knowledge only)
+- **One of:** an OpenAI API key, an Anthropic API key, or AWS credentials for Bedrock
 
-## Setup
+---
 
-### 1. Bridge (Mac)
+## Quick start
+
+### Option A — OpenAI
 
 ```bash
-cd bridge
-pip3 install boto3   # if not already installed
-./install.sh         # installs as a LaunchAgent (auto-starts at login)
+git clone https://github.com/samfoy/piread marginalia
+cd marginalia
+pip install -e ".[openai,embed]"
+
+export MARGINALIA_OPENAI_API_KEY=sk-...
+export MARGINALIA_MODEL_ID=openai:gpt-4o
+export MARGINALIA_VAULT=~/Documents/YourObsidianVault
+
+marginalia serve
+# Bridge listening on :7731
 ```
 
-Test it's running:
+### Option B — Anthropic
+
 ```bash
+pip install -e ".[anthropic,embed]"
+
+export MARGINALIA_ANTHROPIC_API_KEY=sk-ant-...
+export MARGINALIA_MODEL_ID=anthropic:claude-opus-4-5
+export MARGINALIA_VAULT=~/Documents/YourObsidianVault
+
+marginalia serve
+```
+
+### Option C — AWS Bedrock
+
+```bash
+pip install -e ".[bedrock]"
+
+export MARGINALIA_AWS_PROFILE=your-aws-profile
+export MARGINALIA_MODEL_ID=us.anthropic.claude-sonnet-4-6
+export MARGINALIA_VAULT=~/Documents/YourObsidianVault
+
+marginalia serve
+```
+
+---
+
+## KOReader plugin
+
+### Install
+
+**Via ADB** (Android/Boox):
+```bash
+adb push marginalia.koplugin /sdcard/koreader/plugins/marginalia.koplugin
+```
+
+**Via file manager / MTP:** copy the `marginalia.koplugin/` folder to `koreader/plugins/` on your device.
+
+Restart KOReader after copying.
+
+### Configure
+
+Top menu → Tools (wrench icon) → **marginalia**
+
+| Setting | Value |
+|---|---|
+| Host | Your Mac's IP or hostname. Same LAN: `macbook.local`. Tailscale: your Tailscale IP. |
+| Port | `7731` |
+| Token | Leave empty, or set the same value as `MARGINALIA_TOKEN` |
+| Spoiler-free | On (default) — hides entities/events past your reading position |
+| Auto-capture lookups | On (default) — highlights looked-up passages with the AI answer |
+
+---
+
+## Running as a background service (macOS)
+
+```bash
+# Edit the plist — update your project path and env vars
+$EDITOR bridge/com.sam.marginalia.plist
+
+# Install as a LaunchAgent (starts at login, restarts on crash)
+cp bridge/com.sam.marginalia.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sam.marginalia.plist
+
+# Verify
 curl http://localhost:7731/ping   # → pong
+
+# Logs
+tail -f ~/Library/Logs/marginalia.log
 ```
 
-### 2. Plugin (KOReader)
+---
 
-Install via the KOReader AppStore plugin, or manually:
+## Configuration reference
 
-1. Download `piread.koplugin.zip` from [Releases](../../releases/latest)
-2. Unzip into your KOReader plugins directory:
-   - Android: `/sdcard/koreader/plugins/`
-   - Kindle: `/mnt/us/koreader/plugins/`
-3. Restart KOReader
+All settings via environment variables.
 
-### 3. First use
-
-1. **☰ → More tools → Pi reading assistant → Test connection**
-2. Set Host to your Mac's IP if `macbook.local` doesn't resolve (common on Android)
-3. Open any book in your Calibre library — X-Ray generates in the background (~5 min first time, instant after)
-4. **☰ → More tools → Pi reading assistant → Now Reading** to open the dashboard
-
-## X-Ray quality (Red Rising example)
-
-Single-shot strategy (full book in one Bedrock call, ~5 min):
-
-- **24 characters** — aliases, roles, first-appearance %, descriptions (Darrow/Reaper/Lazarus, Sevro/Goblin, Virginia/Mustang, Adrius/Jackal...)
-- **14 locations** — Lykos, Institute Valley, Olympus...
-- **25 terms** — Colors caste system, slingBlade, gravBoots, The Passage...
-- **16 references** — Lazarus (biblical), Persephone (Eo's martyrdom), Lord of the Flies (Institute parallel), The Count of Monte Cristo, Plato's Noble Lie (Gold supremacy speech), Spartan Agoge (Passage comparison), Cicero quote...
-- **43 timeline events** — full narrative arc with chapter names and positions
-
-## Ambient pi chat
-
-After X-Ray is generated, ask pi directly:
-
-> "Who is Sevro in Red Rising?"  
-> "What's happened in Red Rising up to 45%?"  
-> "Give me context before I start Golden Son"  
-> "What books in my library have X-Ray data?"
-
-The `~/.pi/agent/skills/piread/SKILL.md` skill handles these queries from the cache — no Bedrock call needed.
-
-## Bridge config
-
-All via environment variables in `bridge/com.sam.piread-bridge.plist`:
+### Core
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `PIREAD_AWS_PROFILE` | `openclaw-bedrock` | AWS credentials profile |
-| `PIREAD_AWS_REGION` | `us-west-2` | Bedrock region |
-| `PIREAD_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | Model |
-| `PIREAD_PORT` | `7731` | Listen port |
-| `PIREAD_TOKEN` | *(empty)* | Optional shared secret |
+|---|---|---|
+| `MARGINALIA_PORT` | `7731` | Bridge HTTP port |
+| `MARGINALIA_VAULT` | `~/Documents` | Obsidian vault root |
+| `MARGINALIA_TOKEN` | *(empty)* | Shared secret (set same in plugin settings) |
 
-## Logs
+### LLM providers
+
+| Variable | Default | Description |
+|---|---|---|
+| `MARGINALIA_OPENAI_API_KEY` | *(empty)* | OpenAI API key (also checks `OPENAI_API_KEY`) |
+| `MARGINALIA_ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key (also checks `ANTHROPIC_API_KEY`) |
+| `MARGINALIA_MODEL_ID` | `openai.gpt-5.5` | Primary model |
+| `MARGINALIA_FALLBACK_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | Terminal fallback |
+| `MARGINALIA_MODEL_CHAIN` | *(auto)* | Explicit comma-separated chain, overrides auto-derivation |
+| `MARGINALIA_MODEL_COOLDOWN_S` | `120` | Circuit breaker window (seconds) |
+| `MARGINALIA_COMPANION_EFFORT` | `low` | Reasoning effort: `none\|low\|medium\|high` |
+| `MARGINALIA_MAX_TOKENS` | `600` | Max tokens for companion responses |
+
+### AWS Bedrock (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `MARGINALIA_AWS_PROFILE` | *(empty)* | AWS credentials profile |
+| `MARGINALIA_AWS_REGION` | `us-west-2` | Bedrock region |
+
+### Model ID format
+
+| Prefix | Routes to | Example |
+|---|---|---|
+| `openai:` | OpenAI API directly | `openai:gpt-4o` |
+| `anthropic:` | Anthropic API directly | `anthropic:claude-haiku-3-5` |
+| `openai.` | AWS bedrock-mantle | `openai.gpt-5.5` |
+| *(other)* | AWS Bedrock invoke_model | `us.anthropic.claude-sonnet-4-6` |
+
+The fallback chain is derived automatically from the primary model's provider — non-AWS primaries get provider-appropriate cheap fallbacks, not useless AWS fallbacks.
+
+### RAG / embeddings
+
+| Variable | Default | Description |
+|---|---|---|
+| `MARGINALIA_EMBED_BACKEND` | `auto` | `auto\|local\|openai\|bedrock` |
+| `MARGINALIA_LOCAL_EMBED_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model (~80MB) |
+| `MARGINALIA_EMBED_MODEL` | `cohere.embed-english-v3` | Model ID for OpenAI/Bedrock embedding |
+| `MARGINALIA_RAG_CHUNK_CHARS` | `1600` | Characters per chunk |
+| `MARGINALIA_XRAY_MAX_TOKENS` | `16384` | Max tokens for Book Index generation |
+
+Auto-detection order: OpenAI key present → `openai`; sentence-transformers installed → `local`; else → `bedrock`.
+
+---
+
+## How it works
+
+### Book Index generation
+
+When you open a book, the plugin calls `/book-index/init`. The bridge looks up the EPUB in Calibre's `metadata.db`, extracts the full text, and sends it to the configured LLM with a structured schema prompt. The result (characters, locations, terms, references, timeline) is cached at `~/.marginalia/cache/<md5>.json`. Generation is automatic and non-blocking — the plugin polls `/book-index/status/<job_id>` until complete.
+
+### RAG index
+
+After Book Index generation, the bridge chunks the EPUB text, embeds all chunks with the configured embedding backend, and stores the result alongside the Book Index. At query time, chunks are filtered to `position_pct ≤ reading_pct` (the spoiler fence), then ranked by cosine similarity to the query. For a book series, the RAG scope automatically includes prior books at 100% and excludes future ones entirely.
+
+### Fallback chain
+
+Every LLM call goes through `_complete()` in `bridge/xray_generator.py`, which tries models in the configured chain. On any failure (5xx, empty completion, timeout), the next model is tried. A per-model circuit breaker marks a failed model as cooling down for `MARGINALIA_MODEL_COOLDOWN_S` seconds, skipping it on subsequent calls and re-probing once the window lapses. No manual intervention needed when a provider has an outage.
+
+### Obsidian notes
+
+The bridge writes to `MARGINALIA_VAULT/Notes/Books/<Author> - <Title>.md`. Each entry includes the highlighted passage, surrounding context, query (if different from the passage), and the AI answer. The file is created with YAML frontmatter on first write. Notes are queued durably on-device (offline-safe) and flushed to the bridge when connectivity is available.
+
+---
+
+## Calibre integration
+
+Calibre is optional. With it, marginalia extracts the full EPUB text for richer, more accurate Book Index generation and uses Calibre's authoritative metadata for series name, book order, and author normalization.
+
+Without Calibre, Book Index generation falls back to the LLM's training knowledge. Well-known books work well; obscure titles may be less accurate.
+
+marginalia looks for Calibre's library at `~/Calibre Library/metadata.db` (the macOS default). If your library is elsewhere, set it with the `CALIBRE_DB` environment variable or edit `bridge/book_finder.py`.
+
+---
+
+## Development
 
 ```bash
-tail -f ~/Library/Logs/piread-bridge.log
+git clone https://github.com/samfoy/piread marginalia
+cd marginalia
+pip install -e ".[all]"
+
+# Run bridge directly
+cd bridge && python server.py
+
+# Or via CLI
+marginalia serve
+
+# Monitor
+open http://localhost:7731/monitor
 ```
+
+The bridge is a plain stdlib `http.server` — no framework dependencies. All LLM calls are in `bridge/xray_generator.py`. RAG logic is in `bridge/rag.py`. The KOReader plugin is pure Lua in `marginalia.koplugin/`.
+
+### Contributing
+
+PRs welcome. Key areas:
+- **Ollama / local models** — add a `_invoke_ollama` path in `xray_generator.py`
+- **Streaming responses** — long-standing gap; the companion endpoints block until complete
+- **Windows support** — the bridge is cross-platform; the LaunchAgent is macOS-specific
+- **Plugin distribution** — package as a `.zip` for KOReader's in-app plugin manager
+
+---
 
 ## License
 
