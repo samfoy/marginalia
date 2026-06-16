@@ -21,9 +21,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import boto3
-from botocore.config import Config as BotocoreConfig
-from botocore.exceptions import BotoCoreError, ClientError
+try:
+    import boto3
+    from botocore.config import Config as BotocoreConfig
+    from botocore.exceptions import BotoCoreError, ClientError
+    _BEDROCK_AVAILABLE = True
+except ImportError:
+    _BEDROCK_AVAILABLE = False
+    boto3 = None  # type: ignore
+    BotocoreConfig = None  # type: ignore
+    BotoCoreError = Exception  # type: ignore
+    ClientError = Exception  # type: ignore
 
 from epub_extract import EpubContent, Chapter
 
@@ -48,7 +56,8 @@ MODEL_CHAIN_ENV  = os.environ.get("MARGINALIA_MODEL_CHAIN", "")
 MODEL_COOLDOWN_S = float(os.environ.get("MARGINALIA_MODEL_COOLDOWN_S", "120"))
 _model_failures: dict[str, float] = {}
 _failures_lock   = threading.Lock()
-MAX_TOKENS        = int(os.environ.get("MARGINALIA_MAX_TOKENS", "16384"))
+MAX_TOKENS        = int(os.environ.get("MARGINALIA_XRAY_MAX_TOKENS",
+                        os.environ.get("MARGINALIA_MAX_TOKENS", "16384")))
 MAX_PARALLEL_CHUNKS = int(os.environ.get("MARGINALIA_MAX_PARALLEL_CHUNKS", "4"))
 
 # GPT-5.5 context: 272K tokens ≈ 1.1M chars. Keep headroom for prompt overhead.
@@ -148,6 +157,10 @@ _cached_client = None
 
 def _client():
     global _cached_client
+    if not _BEDROCK_AVAILABLE:
+        raise RuntimeError(
+            "boto3 not installed — Bedrock requires: pip install 'marginalia[bedrock]'"
+        )
     if _cached_client is None:
         with _client_lock:
             if _cached_client is None:

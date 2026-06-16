@@ -258,7 +258,7 @@ Then add it to Task Scheduler: open **Task Scheduler** → **Create Basic Task**
 - Knowledge-only mode (without Calibre) is faster
 
 **Calibre not found**
-- Check your library path: `python3 -c "from bridge.book_finder import CALIBRE_LIB; print(CALIBRE_LIB)"`
+- Check your library path (from repo root with venv active): `python3 -c "import sys; sys.path.insert(0,'bridge'); from book_finder import CALIBRE_LIB; print(CALIBRE_LIB)"`
 - Override with: `export MARGINALIA_CALIBRE_DB="path/to/your/Calibre Library"`
 - See [docs/calibre.md](calibre.md) for details
 

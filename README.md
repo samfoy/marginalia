@@ -50,6 +50,7 @@ marginalia runs a small bridge server on your Mac that your KOReader device talk
 ```bash
 git clone https://github.com/samfoy/marginalia
 cd marginalia
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[openai,embed]"
 
 export MARGINALIA_OPENAI_API_KEY=sk-...
@@ -63,6 +64,7 @@ marginalia serve
 ### Option B — Anthropic
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[anthropic,embed]"
 
 export MARGINALIA_ANTHROPIC_API_KEY=sk-ant-...
@@ -75,6 +77,7 @@ marginalia serve
 ### Option C — AWS Bedrock
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[bedrock]"
 
 export MARGINALIA_AWS_PROFILE=your-aws-profile
@@ -149,7 +152,7 @@ All settings via environment variables.
 |---|---|---|
 | `MARGINALIA_OPENAI_API_KEY` | *(empty)* | OpenAI API key (also checks `OPENAI_API_KEY`) |
 | `MARGINALIA_ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key (also checks `ANTHROPIC_API_KEY`) |
-| `MARGINALIA_MODEL_ID` | `openai.gpt-5.5` | Primary model |
+| `MARGINALIA_MODEL_ID` | `openai:gpt-4o` | Primary model |
 | `MARGINALIA_FALLBACK_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | Terminal fallback |
 | `MARGINALIA_MODEL_CHAIN` | *(auto)* | Explicit comma-separated chain, overrides auto-derivation |
 | `MARGINALIA_MODEL_COOLDOWN_S` | `120` | Circuit breaker window (seconds) |
@@ -169,7 +172,7 @@ All settings via environment variables.
 |---|---|---|
 | `openai:` | OpenAI API directly | `openai:gpt-4o` |
 | `anthropic:` | Anthropic API directly | `anthropic:claude-haiku-3-5` |
-| `openai.` | AWS bedrock-mantle | `openai.gpt-5.5` |
+| `openai.` | AWS bedrock-mantle | `openai.gpt-5.5` (requires allowlisted AWS account) |
 | *(other)* | AWS Bedrock invoke_model | `us.anthropic.claude-sonnet-4-6` |
 
 The fallback chain is derived automatically from the primary model's provider — non-AWS primaries get provider-appropriate cheap fallbacks, not useless AWS fallbacks.
@@ -214,7 +217,7 @@ Calibre is optional. With it, marginalia extracts the full EPUB text for richer,
 
 Without Calibre, Book Index generation falls back to the LLM's training knowledge. Well-known books work well; obscure titles may be less accurate.
 
-marginalia looks for Calibre's library at `~/Calibre Library/metadata.db` (the macOS default). If your library is elsewhere, set it with the `CALIBRE_DB` environment variable or edit `bridge/book_finder.py`.
+marginalia looks for Calibre's library at `~/Calibre Library/` (the macOS default). If yours is elsewhere, point `MARGINALIA_CALIBRE_DB` at the library **directory** (not the .db file): `export MARGINALIA_CALIBRE_DB="/path/to/Calibre Library"`
 
 ---
 

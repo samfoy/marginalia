@@ -15,30 +15,13 @@ LABEL="com.marginalia.bridge"
 PLIST_DST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_PATH="$HOME/Library/Logs/marginalia.log"
 
-# ── Venv detection ───────────────────────────────────────────────────────────
+# ── Python detection (venv auto-activate first so we get the right python) ────────
 
-# If no venv is active, check if one exists in the repo root
-if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-    REPO_VENV="$BRIDGE_DIR/../.venv"
-    if [[ -f "$REPO_VENV/bin/python3" ]]; then
-        echo "Found .venv in repo — activating it."
-        source "$REPO_VENV/bin/activate"
-    else
-        # Check if marginalia is importable from the detected Python
-        if ! "$PYTHON" -c "import bridge.cli" 2>/dev/null && \
-           ! "$PYTHON" -m bridge.cli --help &>/dev/null 2>&1; then
-            echo ""
-            echo "⚠ Warning: 'marginalia' package not found in $PYTHON."
-            echo "  If you installed into a venv, activate it first:"
-            echo "    source .venv/bin/activate"
-            echo "  Then re-run this script."
-            echo "  Continuing anyway — edit the plist to use the correct Python path."
-            echo ""
-        fi
-    fi
+# Activate .venv if it exists in the repo root and no venv is currently active
+if [[ -z "${VIRTUAL_ENV:-}" ]] && [[ -f "$BRIDGE_DIR/../.venv/bin/python3" ]]; then
+    echo "Found .venv in repo — activating it."
+    source "$BRIDGE_DIR/../.venv/bin/activate"
 fi
-
-# ── Python detection ─────────────────────────────────────────────────────────────
 
 detect_python() {
     for candidate in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
@@ -62,6 +45,16 @@ if [[ -z "$PYTHON" ]]; then
     exit 1
 fi
 echo "✓ Python: $PYTHON ($("$PYTHON" --version))"
+
+# Warn if marginalia is not importable from the selected Python
+if ! "$PYTHON" -c "import bridge.cli" 2>/dev/null && \
+   ! "$PYTHON" -c "import marginalia" 2>/dev/null; then
+    echo ""
+    echo "⚠ Warning: marginalia not importable from $PYTHON."
+    echo "  If you installed into a venv, activate it first: source .venv/bin/activate"
+    echo "  Continuing — update the Python path in the plist after install."
+    echo ""
+fi
 
 # ── Vault path ────────────────────────────────────────────────────────────────
 

@@ -7,6 +7,9 @@ After=network.target
 Type=simple
 
 # Update ExecStart to point at your actual install location.
+# Replace %h/marginalia with the actual path where you cloned the repo.
+# IMPORTANT: use the Python from your venv, not /usr/bin/python3:
+#   ExecStart=/home/yourname/marginalia/.venv/bin/python3 /home/yourname/marginalia/bridge/server.py
 # Using %h expands to $HOME automatically.
 ExecStart=/usr/bin/python3 %h/marginalia/bridge/server.py
 WorkingDirectory=%h/marginalia/bridge

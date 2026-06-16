@@ -41,8 +41,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 
-from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
+try:
+    from botocore.config import Config
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:
+    Config = None  # type: ignore
+    BotoCoreError = Exception  # type: ignore
+    ClientError = Exception  # type: ignore
 
 from book_finder import find_epub
 from epub_extract import extract_epub
