@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-piread-bridge — KOReader → Claude Bedrock bridge.
+marginalia — KOReader reading intelligence bridge.
 
 Routes:
-  GET  /ping                  health check → "pong"
-  GET  /index                 X-Ray cache index (for pi chat queries)
-  GET  /xray/status/<job_id>  poll a background X-Ray generation job
-  POST /ask                   conversational query (explain/translate/summarize)
-  POST /note                  save highlighted passage + context to Obsidian vault
-  POST /xray/init             find book in Calibre, generate X-Ray, cache it
-  POST /xray/progress         update reading position for a cached book
+  GET  /ping                       health check → "pong"
+  GET  /index                      Book Index cache index
+  GET  /book-index/status/<job_id> poll a background Book Index generation job
+  POST /ask                        conversational query (explain/translate/summarize)
+  POST /note                       save highlighted passage + context to Obsidian vault
+  POST /book-index/init            find book in Calibre, generate Book Index, cache it
+  POST /book-index/progress        update reading position for a cached book
 
   GET  /monitor               live request-monitor dashboard (HTML)
   GET  /monitor/data          monitor snapshot (JSON, polled by the dashboard)
 
 Config via environment variables (all optional):
-  PIREAD_PORT         TCP port to listen on           (default: 7731)
-  PIREAD_AWS_PROFILE  AWS credentials profile          (default: openclaw-bedrock)
-  PIREAD_AWS_REGION   Bedrock region                   (default: us-west-2)
-  PIREAD_MODEL_ID     Model for /ask queries           (default: us.anthropic.claude-sonnet-4-6)
-  PIREAD_TOKEN        Shared secret (empty = no auth)  (default: "")
-  PIREAD_MAX_TOKENS   Max tokens for /ask responses    (default: 600)
-  PIREAD_VAULT        Obsidian vault root              (default: ~/Documents/Sam)
+  MARGINALIA_PORT         TCP port to listen on           (default: 7731)
+  MARGINALIA_AWS_PROFILE  AWS credentials profile          (default: "" — required for Bedrock)
+  MARGINALIA_AWS_REGION   Bedrock region                   (default: us-west-2)
+  MARGINALIA_MODEL_ID     Model for /ask queries           (default: gpt-4o)
+  MARGINALIA_TOKEN        Shared secret (empty = no auth)  (default: "")
+  MARGINALIA_MAX_TOKENS   Max tokens for /ask responses    (default: 600)
+  MARGINALIA_VAULT        Obsidian vault root              (default: ~/Documents)
 """
 
 import io
@@ -52,17 +52,16 @@ import monitor
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-PORT       = int(os.environ.get("PIREAD_PORT", 7731))
-PROFILE    = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
+PORT       = int(os.environ.get("MARGINALIA_PORT", 7731))
+PROFILE    = os.environ.get("MARGINALIA_AWS_PROFILE", "")
 # server.py uses Sonnet for /ask and knowledge-only X-Ray — never GPT (no Bedrock invoke_model support)
-MODEL_ID   = os.environ.get("PIREAD_MODEL_ID", "openai.gpt-5.5")
-TOKEN      = os.environ.get("PIREAD_TOKEN", "")
-MAX_TOKENS = int(os.environ.get("PIREAD_MAX_TOKENS", 600))
-VAULT_ROOT = os.path.expanduser(os.environ.get("PIREAD_VAULT", "~/Documents/Sam"))
+MODEL_ID   = os.environ.get("MARGINALIA_MODEL_ID", "openai.gpt-5.5")
+TOKEN      = os.environ.get("MARGINALIA_TOKEN", "")
+MAX_TOKENS = int(os.environ.get("MARGINALIA_MAX_TOKENS", 600))
+VAULT_ROOT = os.path.expanduser(os.environ.get("MARGINALIA_VAULT", "~/Documents"))
 BOOKS_DIR  = os.path.join(VAULT_ROOT, "Notes", "Books")
-# Reasoning effort for interactive companion calls (ask/recap/wiki/section).
-# 'low' is ~5x faster than default for short-prose tasks; X-Ray gen keeps full reasoning.
-COMPANION_EFFORT = os.environ.get("PIREAD_COMPANION_EFFORT", "low")
+# Reasoning effort for interactive companion calls.
+COMPANION_EFFORT = os.environ.get("MARGINALIA_COMPANION_EFFORT", "low")
 
 # ── System prompts per mode ───────────────────────────────────────────────────
 
@@ -269,7 +268,7 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
         if not book_meta:
             # Fallback: generate from Claude's knowledge (no EPUB needed)
             logging.info("Book not in Calibre, using knowledge-only mode: %s", title)
-            update("generating", progress=f"Generating X-Ray from knowledge (no EPUB): {title}")
+            update("generating", progress=f"Generating Book Index from knowledge (no EPUB): {title}")
             _run_knowledge_xray_job(job_id, title, author)
             return
 
@@ -277,7 +276,7 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
         content = extract_epub(book_meta["epub_path"])
 
         update("generating",
-               progress=f"Generating X-Ray ({content.total_chars:,} chars)")
+               progress=f"Generating Book Index ({content.total_chars:,} chars)")
 
         # Authoritative series from Calibre metadata.db (EPUB tags are often stale).
         sv = series.resolve(calibre_id=book_meta.get("calibre_id"),
@@ -313,16 +312,16 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
             logging.exception("rag index build failed (non-fatal)")
 
         update("ready", record=record, error=None)
-        logging.info("X-Ray job %s complete: %s", job_id, title)
+        logging.info("Book Index job %s complete: %s", job_id, title)
 
     except Exception as exc:
-        logging.exception("X-Ray job %s failed", job_id)
+        logging.exception("Book Index job %s failed", job_id)
         update("failed", error=str(exc))
 
 
 def _run_knowledge_xray_job(job_id: str, title: str, author: str) -> None:
     """
-    Background thread: generate X-Ray from model knowledge (no EPUB).
+    Background thread: generate Book Index from model knowledge (no EPUB).
     Uses xray_generator._call() so GPT-5.5 (primary) or Sonnet (fallback)
     handle it the same as EPUB-based generation.
     """
@@ -335,13 +334,13 @@ def _run_knowledge_xray_job(job_id: str, title: str, author: str) -> None:
             _xray_jobs[job_id].update({"status": status, **kw})
 
     try:
-        update("generating", progress=f"Generating X-Ray from knowledge: {title}")
+        update("generating", progress=f"Generating Book Index from knowledge: {title}")
 
         author_clause = f" by {author}" if author else ""
         header = f'Book: "{title}"{author_clause}'
         prompt = (
             header + "\n\n"
-            "Generate a complete X-Ray for this book from your training knowledge.\n"
+            "Generate a complete Book Index for this book from your training knowledge.\n"
             "Use your best estimates for first_appearance_pct and position_pct (0-100).\n\n"
             + _SCHEMA + "\n\n"
             + _REFERENCE_RULES + "\n\n"
@@ -367,20 +366,20 @@ def _run_knowledge_xray_job(job_id: str, title: str, author: str) -> None:
         }
         xray_cache.save(book_hash, record)
         update("ready", record=record, error=None)
-        logging.info("Knowledge X-Ray complete: %s (%d chars | %d themes | %d timeline)",
+        logging.info("Knowledge Book Index complete: %s (%d chars | %d themes | %d timeline)",
                      title, len(xray.get("characters", [])),
                      len(xray.get("themes", [])), len(xray.get("timeline", [])))
 
     except Exception as exc:
-        logging.exception("Knowledge X-Ray job %s failed", job_id)
+        logging.exception("Knowledge Book Index job %s failed", job_id)
         update("failed", error=str(exc))
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 def _serve_xray(record: dict) -> dict:
-    """Return a book's X-Ray for serving, with prior-series-book entities merged
-    in (so the X-Ray browser shows characters carried over from earlier books).
+    """Return a book's Book Index for serving, with prior-series-book entities merged
+    in (so the Book Index browser shows characters carried over from earlier books).
     Injected entities are tagged source_label and never spoiler-gated."""
     import copy as _copy
     xray = record.get("xray", {})
@@ -438,8 +437,8 @@ class Handler(BaseHTTPRequestHandler):
                 "object": "list",
                 "data": [{"id": MODEL_ID, "object": "model", "created": 0, "owned_by": "bedrock"}]
             })
-        elif self.path.startswith("/xray/status/"):
-            job_id = self.path.split("/xray/status/", 1)[-1]
+        elif self.path.startswith("/book-index/status/"):
+            job_id = self.path.split("/book-index/status/", 1)[-1]
             with _jobs_lock:
                 job = _xray_jobs.get(job_id)
             if not job:
@@ -476,10 +475,10 @@ class Handler(BaseHTTPRequestHandler):
                 monitor.end(rec, getattr(self, "_status", 200))
 
     def _dispatch_post(self):
-        if self.path == "/xray/init":
+        if self.path == "/book-index/init":
             self._handle_xray_init()
             return
-        if self.path == "/xray/progress":
+        if self.path == "/book-index/progress":
             self._handle_xray_progress()
             return
         if self.path == "/chat":
@@ -696,7 +695,7 @@ class Handler(BaseHTTPRequestHandler):
                  + f" — reader is at {reading_pct:.0f}%.",
                  f"Write the entry about this {kind}: {entity}"]
         if known:
-            parts.append(f"What the X-Ray already notes: {known}")
+            parts.append(f"What the Book Index already notes: {known}")
 
         rag_ctx = self._rag_context(
             title, author,
@@ -732,7 +731,7 @@ class Handler(BaseHTTPRequestHandler):
         if not h or not rag.has_index(h):
             self._send_json(200, {"response": None,
                                   "error": "Section analysis needs the retrieval "
-                                           "index — rebuild X-Ray for this book."})
+                                           "index — rebuild Book Index for this book."})
             return
 
         chunks = rag.section_chunks(h, start_pct, end_pct, max_chars=7000)
@@ -771,7 +770,7 @@ class Handler(BaseHTTPRequestHandler):
         # ── Check cache first ──────────────────────────────────────────────────
         cached = xray_cache.find_by_title_author(title, author)
         if cached:
-            logging.info("X-Ray cache HIT: %s", title)
+            logging.info("Book Index cache HIT: %s", title)
             if reading_pct:
                 xray_cache.update_reading_pct(cached["book"]["epub_hash"], reading_pct)
             mac_generated_at = cached.get("generated_at", "")
@@ -796,9 +795,9 @@ class Handler(BaseHTTPRequestHandler):
             daemon=True,
         )
         t.start()
-        logging.info("X-Ray job %s started for '%s'", job_id, title)
+        logging.info("Book Index job %s started for '%s'", job_id, title)
         self._send_json(202, {"status": "generating", "job_id": job_id,
-                               "poll_url": f"/xray/status/{job_id}"})
+                               "poll_url": f"/book-index/status/{job_id}"})
 
     # ── /v1/chat/completions (OpenAI-compatible proxy for KO Assistant) ───────
     def _handle_openai_compat(self):
@@ -927,12 +926,12 @@ class Handler(BaseHTTPRequestHandler):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    """HTTPServer with per-request threads — /ask never blocks X-Ray generation."""
+    """HTTPServer with per-request threads — /ask never blocks Book Index generation."""
     daemon_threads = True
 
 
 def main():
-    log_file = os.path.expanduser("~/Library/Logs/piread-bridge.log")
+    log_file = os.path.expanduser("~/Library/Logs/marginalia.log")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -943,7 +942,7 @@ def main():
     )
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    logging.info("piread-bridge listening on :%d  model=%s  profile=%s", PORT, MODEL_ID, PROFILE)
+    logging.info("marginalia listening on :%d  model=%s  profile=%s", PORT, MODEL_ID, PROFILE)
 
     def _shutdown(sig, _frame):
         logging.info("Shutting down (signal %d)", sig)

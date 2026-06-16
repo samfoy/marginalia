@@ -1,13 +1,10 @@
 """
-xray_cache.py — Per-book X-Ray cache in ~/.piread/cache/.
+xray_cache.py — Per-book Book Index cache in ~/.marginalia/cache/.
 
 Structure:
-  ~/.piread/cache/
+  ~/.marginalia/cache/
     index.json          — quick-lookup table (title/author/hash/metadata)
-    <md5_hash>.json     — full X-Ray data for one book
-
-The index is what pi chat queries for ambient lookups.
-The per-book files are what the bridge serves to the KOReader plugin.
+    <md5_hash>.json     — full Book Index data for one book
 """
 
 import json
@@ -18,7 +15,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR  = Path.home() / ".piread" / "cache"
+CACHE_DIR  = Path.home() / ".marginalia" / "cache"
 INDEX_FILE = CACHE_DIR / "index.json"
 _lock      = threading.Lock()
 

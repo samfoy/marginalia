@@ -1,11 +1,11 @@
 --[[--
-piread_queue.lua — Durable offline queue for "Save Note" highlights.
+marginalia_queue.lua — Durable offline queue for "Save Note" highlights.
 
 Notes are written to a local queue file first, then flushed to the Obsidian
 vault (via the bridge /note endpoint) whenever the bridge is reachable. This
 guarantees a highlight note is never lost to a flaky/absent connection.
 
-Queue file: <settings>/piread/note_queue.json
+Queue file: <settings>/marginalia/note_queue.json
   { "notes": [ {id, highlight, context, book_title, book_author, reading_pct, ts} ] }
 --]]--
 
@@ -20,7 +20,7 @@ end
 
 local Queue = {}
 
-local function dir()  return DataStorage:getSettingsDir() .. "/piread" end
+local function dir()  return DataStorage:getSettingsDir() .. "/marginalia" end
 local function path() return dir() .. "/note_queue.json" end
 
 local function ensureDir()
@@ -49,12 +49,12 @@ local function write(notes)
     for i = 1, #notes do arr[i] = notes[i] end
     local ok, enc = pcall(rapidjson.encode, { notes = arr })
     if not ok then
-        logger.warn("piread_queue: encode error:", enc)
+        logger.warn("marginalia_queue: encode error:", enc)
         return false
     end
     local f = io.open(path(), "w")
     if not f then
-        logger.warn("piread_queue: cannot write", path())
+        logger.warn("marginalia_queue: cannot write", path())
         return false
     end
     f:write(enc); f:close()
@@ -68,7 +68,7 @@ function Queue.enqueue(note)
     note.ts = note.ts or os.time()
     notes[#notes + 1] = note
     local okw = write(notes)
-    logger.info("piread_queue: enqueued note", note.id, "queue size", #notes, "written", tostring(okw))
+    logger.info("marginalia_queue: enqueued note", note.id, "queue size", #notes, "written", tostring(okw))
     return note.id
 end
 

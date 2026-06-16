@@ -1,5 +1,5 @@
 """
-monitor.py — in-memory request monitor for piread-bridge.
+monitor.py — in-memory request monitor for marginalia.
 
 Tracks every HTTP request the bridge handles: what's in flight right now
 (with a live-growing elapsed timer), a ring buffer of recently completed
@@ -197,7 +197,7 @@ _HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>piread monitor</title>
+<title>marginalia</title>
 <style>
   :root {
     --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3;
@@ -249,7 +249,7 @@ _HTML = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1><span class="dot"></span>piread monitor</h1>
+  <h1><span class="dot"></span>marginalia</h1>
   <div class="meta">
     <span>uptime <b id="uptime">—</b></span>
     <span>model <b id="model">—</b></span>

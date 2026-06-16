@@ -1,16 +1,16 @@
 --[[--
-piread_context.lua — "Now Reading" contextual dashboard.
+marginalia_context.lua — "Now Reading" contextual dashboard.
 
 Opens without requiring text selection. Shows which characters, locations,
-references, and terms from the X-Ray appear in the current chapter.
-Tap any entry to see its full X-Ray detail. "Ask Pi" button sends the
+references, and terms from the Book Index appear in the current chapter.
+Tap any entry to see its full Book Index detail. "Ask AI" button sends the
 current passage to the bridge for a narrative summary.
 
 Entry points:
   - Menu → Pi reading assistant → Now Reading
   - Can be gesture-bound via KOReader's Gestures settings
 
-Does NOT require network once X-Ray is cached.
+Does NOT require network once Book Index is cached.
 --]]--
 
 local ButtonDialog  = require("ui/widget/buttondialog")
@@ -244,7 +244,7 @@ function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform)
 
     if not xray then
         UIManager:show(InfoMessage:new{
-            text    = _("X-Ray not ready. Pi is still building it — try again in a minute."),
+            text    = _("Book Index not ready. Still building it — try again in a minute."),
             timeout = 5,
         })
         return
@@ -288,7 +288,7 @@ function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform)
     -- If nothing found, say so
     if #items == 0 then
         items[#items+1] = {
-            text      = _("No X-Ray entities found on this page."),
+            text      = _("No Book Index entities found on this page."),
             mandatory = _("Try a few pages in"),
             callback  = function() end,
         }
@@ -303,7 +303,7 @@ function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform)
             callback  = function() end,
         }
         items[#items+1] = {
-            text      = _("Ask Pi: what's happening here?"),
+            text      = _("Ask AI: what's happening here?"),
             mandatory = _("Sends passage to Pi"),
             callback  = function()
                 UIManager:close(Context._menu)
@@ -312,7 +312,7 @@ function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform)
         }
         if on_ask_freeform then
             items[#items+1] = {
-                text      = _("Ask Pi anything\226\128\166"),
+                text      = _("Ask AI anything\226\128\166"),
                 mandatory = _("Type your question"),
                 callback  = function()
                     UIManager:close(Context._menu)

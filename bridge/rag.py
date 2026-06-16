@@ -1,12 +1,12 @@
 """
-rag.py — Position-bounded retrieval over book text for piread.
+rag.py — Position-bounded retrieval over book text for marginalia.
 
-At X-Ray generation time we chunk the EPUB, embed every chunk with Cohere
+At Book Index generation time we chunk the EPUB, embed every chunk with Cohere
 (via Bedrock), and store the vectors + chunk metadata in a sidecar alongside
-the X-Ray cache:
+the Book Index cache:
 
-    ~/.piread/cache/<hash>.rag.npy    — float16 matrix (n_chunks, dim), L2-normalized
-    ~/.piread/cache/<hash>.rag.json   — {"model", "dim", "count", "chunks":[{chapter, position_pct, text}]}
+    ~/.marginalia/cache/<hash>.rag.npy    — float16 matrix (n_chunks, dim), L2-normalized
+    ~/.marginalia/cache/<hash>.rag.json   — {"model", "dim", "count", "chunks":[{chapter, position_pct, text}]}
 
 At query time we embed the question, filter chunks to those at or before the
 reader's current position (spoiler-safe BY CONSTRUCTION — future chunks are
@@ -31,7 +31,7 @@ import numpy as np
 
 from epub_extract import EpubContent, Chapter
 
-logger = logging.getLogger("piread.rag")
+logger = logging.getLogger("marginalia.rag")
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ EMBED_MAXLEN  = int(os.environ.get("PIREAD_RAG_MAXLEN", "2048"))         # Coher
 EMBED_WORKERS = int(os.environ.get("PIREAD_RAG_WORKERS", "4"))
 DEFAULT_TOP_K = int(os.environ.get("PIREAD_RAG_TOP_K", "8"))
 
-CACHE_DIR = Path.home() / ".piread" / "cache"
+CACHE_DIR = Path.home() / ".marginalia" / "cache"
 
 _PARA_SPLIT = re.compile(r"\n\s*\n")
 

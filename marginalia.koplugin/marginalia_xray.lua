@@ -1,5 +1,5 @@
 --[[--
-piread_xray.lua — X-Ray browser UI for the piread plugin.
+piread_xray.lua — Book Index browser UI for the piread plugin.
 
 Displays characters, locations, timeline, and terms from the local
 X-Ray cache. Entirely offline — no network calls.
@@ -411,7 +411,7 @@ end
 function XRayUI.showMenu(xray, reading_pct)
     if not xray then
         UIManager:show(InfoMessage:new{
-            text = _("X-Ray not available. Open the book first to generate it."),
+            text = _("Book Index not available. Open the book first to generate it."),
             timeout = 4,
         })
         return

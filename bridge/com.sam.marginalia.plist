@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.sam.piread-bridge</string>
+    <string>com.sam.marginalia</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -14,15 +14,15 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PIREAD_AWS_PROFILE</key>
+        <key>MARGINALIA_AWS_PROFILE</key>
         <string>openclaw-bedrock</string>
-        <key>PIREAD_AWS_REGION</key>
+        <key>MARGINALIA_AWS_REGION</key>
         <string>us-west-2</string>
-        <key>PIREAD_MODEL_ID</key>
-        <string>us.anthropic.claude-sonnet-4-6</string>
-        <key>PIREAD_PORT</key>
+        <key>MARGINALIA_MODEL_ID</key>
+        <string>openai.gpt-5.5</string>
+        <key>MARGINALIA_PORT</key>
         <string>7731</string>
-        <!-- Set PIREAD_TOKEN here if you want a shared secret -->
+        <!-- Set MARGINALIA_TOKEN here if you want a shared secret -->
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
@@ -35,9 +35,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/sam.painter/Library/Logs/piread-bridge.log</string>
+    <string>/Users/sam.painter/Library/Logs/marginalia.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/sam.painter/Library/Logs/piread-bridge.log</string>
+    <string>/Users/sam.painter/Library/Logs/marginalia.log</string>
 
     <!-- Throttle rapid restart loops -->
     <key>ThrottleInterval</key>

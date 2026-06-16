@@ -1,5 +1,5 @@
 --[[--
-piread_async.lua — Non-blocking HTTP using ffiutil.runInSubProcess.
+marginalia_async.lua — Non-blocking HTTP using ffiutil.runInSubProcess.
 
 Mirrors the pattern used by koassistant.koplugin (which works on Android 15):
   - Child function takes (pid, child_write_fd) arguments
@@ -24,7 +24,7 @@ local Async = {}
 
 local POLL_INTERVAL = 1.5
 
-local ERR_MARKER = "PIREAD_ERR:"
+local ERR_MARKER = "MARGINALIA_ERR:"
 
 -- ── pipe write helper (same as koassistant's wrap_fd) ─────────────────────────
 
@@ -41,7 +41,7 @@ end
 -- ── Public API ────────────────────────────────────────────────────────────────
 
 local function dlog(msg)
-    logger.dbg("piread_async: " .. msg)
+    logger.dbg("marginalia_async: " .. msg)
 end
 
 function Async.post(url, body_table, on_done, on_error, opts)
@@ -91,7 +91,7 @@ function Async.post(url, body_table, on_done, on_error, opts)
 
     if not pid then
         -- Fork unavailable — fall back to blocking (better than crash)
-        logger.warn("piread async: fork unavailable, falling back to blocking")
+        logger.warn("marginalia async: fork unavailable, falling back to blocking")
         local sink = {}
         local ok, code = http.request({
             url     = url,
@@ -114,7 +114,7 @@ function Async.post(url, body_table, on_done, on_error, opts)
         return function() end
     end
 
-    logger.dbg("piread async: subprocess pid=" .. tostring(pid))
+    logger.dbg("marginalia async: subprocess pid=" .. tostring(pid))
     dlog("fork ok pid=" .. tostring(pid))
 
     -- ── poll loop ───────────────────────────────────────────────────────────

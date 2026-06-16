@@ -31,29 +31,29 @@ logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-PROFILE           = os.environ.get("PIREAD_AWS_PROFILE", "openclaw-bedrock")
-REGION            = os.environ.get("PIREAD_AWS_REGION", "us-west-2")
+PROFILE           = os.environ.get("MARGINALIA_AWS_PROFILE", "")
+REGION            = os.environ.get("MARGINALIA_AWS_REGION", "us-west-2")
 # Primary: GPT-5.5 via bedrock-mantle (richer extraction)
 # Fallback: Sonnet via direct Bedrock (reliable, spoiler-safe)
-MODEL_ID          = os.environ.get("PIREAD_MODEL_ID",          "openai.gpt-5.5")
-FALLBACK_MODEL_ID = os.environ.get("PIREAD_FALLBACK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
-CHUNK_MODEL_ID    = os.environ.get("PIREAD_CHUNK_MODEL_ID",    MODEL_ID)
+MODEL_ID          = os.environ.get("MARGINALIA_MODEL_ID",          "openai.gpt-5.5")
+FALLBACK_MODEL_ID = os.environ.get("MARGINALIA_FALLBACK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+CHUNK_MODEL_ID    = os.environ.get("MARGINALIA_CHUNK_MODEL_ID",    MODEL_ID)
 
 # Ordered model fallback chain. Each call tries models left-to-right, dropping to
 # the next on any failure (5xx / empty completion / network). Default derives from
 # the primary model → gpt-5.4 → Sonnet (Bedrock). A model that just failed is skipped
 # for MODEL_COOLDOWN_S so a known-down model (e.g. a gpt-5.5 outage) doesn't cost a
 # failed call on every request — it's re-probed once the cooldown lapses (auto-recovery).
-MODEL_CHAIN_ENV  = os.environ.get("PIREAD_MODEL_CHAIN", "")
-MODEL_COOLDOWN_S = float(os.environ.get("PIREAD_MODEL_COOLDOWN_S", "120"))
+MODEL_CHAIN_ENV  = os.environ.get("MARGINALIA_MODEL_CHAIN", "")
+MODEL_COOLDOWN_S = float(os.environ.get("MARGINALIA_MODEL_COOLDOWN_S", "120"))
 _model_failures: dict[str, float] = {}
 _failures_lock   = threading.Lock()
-MAX_TOKENS        = int(os.environ.get("PIREAD_XRAY_MAX_TOKENS", "16384"))
-MAX_PARALLEL_CHUNKS = int(os.environ.get("PIREAD_MAX_PARALLEL_CHUNKS", "4"))
+MAX_TOKENS        = int(os.environ.get("MARGINALIA_MAX_TOKENS", "16384"))
+MAX_PARALLEL_CHUNKS = int(os.environ.get("MARGINALIA_MAX_PARALLEL_CHUNKS", "4"))
 
 # GPT-5.5 context: 272K tokens ≈ 1.1M chars. Keep headroom for prompt overhead.
 GPT_SINGLE_SHOT_LIMIT = 800_000
-GPT_EMPTY_RETRIES     = int(os.environ.get("PIREAD_GPT_RETRIES", "3"))
+GPT_EMPTY_RETRIES     = int(os.environ.get("MARGINALIA_GPT_RETRIES", "3"))
 
 # Large context requests can take several minutes
 _BEDROCK_CONFIG = BotocoreConfig(
@@ -166,7 +166,7 @@ _gpt_session = None
 def _gpt_session_get(force_new: bool = False):
     """Cached boto3 session for the GPT SigV4 path.
 
-    openclaw-bedrock is an assume-role profile (role_arn + source_profile), so
+    MARGINALIA_AWS_PROFILE may be an assume-role profile (role_arn + source_profile), so
     its credentials are *refreshable*. We must take frozen credentials PER
     REQUEST (never cache the frozen snapshot) or the assumed-role STS token
     expires after ~1h and every GPT call 401s.
@@ -276,7 +276,7 @@ def _invoke_one(prompt: str, model_id: str, instructions: str | None = None,
 
 
 def model_chain(primary: str | None = None) -> list[str]:
-    """Ordered fallback chain. Explicit via PIREAD_MODEL_CHAIN, else derived:
+    """Ordered fallback chain. Explicit via MARGINALIA_MODEL_CHAIN, else derived:
     primary (default MODEL_ID) → openai.gpt-5.4 → Sonnet, de-duplicated."""
     if MODEL_CHAIN_ENV.strip():
         chain = [m.strip() for m in MODEL_CHAIN_ENV.split(",") if m.strip()]
@@ -794,7 +794,7 @@ def _gpt_single_shot(content: "EpubContent") -> tuple:
     raw  = _complete(prompt)
     xray = _normalize(_parse(raw))
     logger.info(
-        "GPT X-Ray: %d characters | %d locations | %d themes | %d timeline_events",
+        "Book Index: %d characters | %d locations | %d themes | %d timeline_events",
         len(xray.get("characters", [])), len(xray.get("locations", [])),
         len(xray.get("themes", [])),    len(xray.get("timeline", [])),
     )
@@ -822,7 +822,7 @@ def generate(content: EpubContent) -> dict:
                 xray     = _chunked(content)
                 strategy = "gpt_chunked"
             logger.info(
-                "GPT X-Ray (%s): %d characters | %d themes | %d locations | %d timeline_events",
+                "Book Index (%s): %d characters | %d themes | %d locations | %d timeline_events",
                 strategy,
                 len(xray.get("characters", [])),
                 len(xray.get("themes", [])),
@@ -831,7 +831,7 @@ def generate(content: EpubContent) -> dict:
             )
             return xray, strategy
         except Exception as e:
-            logger.warning("GPT X-Ray failed (%s), falling back to Sonnet", e)
+            logger.warning("GPT Book Index failed (%s), falling back to Sonnet", e)
 
     # ── Sonnet fallback (parallel strategies) ────────────────────────────────────
     if content.total_chars <= SINGLE_SHOT_LIMIT:
@@ -845,7 +845,7 @@ def generate(content: EpubContent) -> dict:
         strategy = "chunked"
 
     logger.info(
-        "Sonnet X-Ray (%s): %d characters | %d locations | %d terms | %d timeline_events",
+        "Sonnet Book Index (%s): %d characters | %d locations | %d terms | %d timeline_events",
         strategy,
         len(xray.get("characters", [])),
         len(xray.get("locations", [])),

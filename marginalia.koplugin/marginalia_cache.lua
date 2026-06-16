@@ -1,8 +1,8 @@
 --[[--
-piread_cache.lua — Device-side X-Ray cache for the piread plugin.
+marginalia_cache.lua — Device-side Book Index cache for the marginalia plugin.
 
-Stores X-Ray data in KOReader's settings dir:
-  settings/piread/<book_hash>.json
+Stores Book Index data in KOReader's settings dir:
+  settings/marginalia/<book_hash>.json
 
 The book hash comes from the bridge (md5 of the epub file on Mac),
 ensuring the device cache keys match the Mac cache.
@@ -20,7 +20,7 @@ end
 local Cache = {}
 
 local function cacheDir()
-    return DataStorage:getSettingsDir() .. "/piread"
+    return DataStorage:getSettingsDir() .. "/marginalia"
 end
 
 local function ensureDir()
@@ -52,7 +52,7 @@ function Cache.loadXray(book_hash)
     f:close()
     local ok, data = pcall(rapidjson.decode, raw)
     if ok and data then return data end
-    logger.warn("piread cache: decode error for", path)
+    logger.warn("marginalia cache: decode error for", path)
     return nil
 end
 
@@ -63,19 +63,19 @@ function Cache.saveXray(book_hash, data)
     local path = cachePath(book_hash)
     local ok, encoded = pcall(rapidjson.encode, data)
     if not ok then
-        logger.warn("piread cache: encode error:", encoded)
+        logger.warn("marginalia cache: encode error:", encoded)
         return false
     end
     local f = io.open(path, "w")
     if not f then
-        logger.warn("piread cache: cannot write to", path)
+        logger.warn("marginalia cache: cannot write to", path)
         return false
     end
     f:write(encoded)
     f:close()
     -- Update index
     Cache.updateIndex(book_hash, data)
-    logger.info("piread cache: saved", path)
+    logger.info("marginalia cache: saved", path)
     return true
 end
 

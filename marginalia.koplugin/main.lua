@@ -1,11 +1,11 @@
 --[[--
 main.lua — Pi reading assistant plugin for KOReader.
 
-On book open: silently requests X-Ray from piread-bridge (or serves from
-local cache instantly). Adds "Ask Pi" to the highlight dialog for
-conversational queries, and "Pi X-Ray" to the menu for the entity browser.
+On book open: silently requests Book Index from marginalia (or serves from
+local cache instantly). Adds "Ask AI" to the highlight dialog for
+conversational queries, and "AI Book Index" to the menu for the entity browser.
 
-Requires piread-bridge running on the same local network as the device.
+Requires marginalia running on the same local network as the device.
 All features degrade gracefully when offline or bridge is unreachable.
 --]]--
 
@@ -26,13 +26,13 @@ local T                = require("ffi/util").template
 local _                = require("gettext")
 
 local Bridge    = require("bridge")
-local Cache     = require("piread_cache")
-local Context   = require("piread_context")
-local XRayUI    = require("piread_xray")
-local Queue     = require("piread_queue")
+local Cache     = require("marginalia_cache")
+local Context   = require("marginalia_context")
+local XRayUI    = require("marginalia_xray")
+local Queue     = require("marginalia_queue")
 
 local PiRead = WidgetContainer:extend{
-    name = "piread",
+    name = "marginalia",
     -- Populated on init:
     _xray        = nil,    -- current book's X-Ray data (table)
     _book_hash   = nil,    -- epub hash (from bridge)
@@ -42,8 +42,8 @@ local PiRead = WidgetContainer:extend{
     _poll_handle = nil,    -- UIManager scheduled handle for polling
 }
 
-local SETTINGS_KEY   = "piread"
-local POLL_INTERVAL  = 10    -- seconds between status polls during X-Ray generation
+local SETTINGS_KEY   = "marginalia"
+local POLL_INTERVAL  = 10    -- seconds between status polls during Book Index generation
 local PROGRESS_EVERY = 5     -- report reading position every N% change
 
 local DEFAULT_SETTINGS = {
@@ -52,7 +52,7 @@ local DEFAULT_SETTINGS = {
     token   = "",
     enabled = true,
     spoiler_free = true,    -- hide characters/events past reading position
-    auto_capture = true,    -- on a successful Ask Pi lookup, highlight the passage
+    auto_capture = true,    -- on a successful Ask AI lookup, highlight the passage
                             -- (note = Pi's answer) and save it to the Obsidian note
 }
 
@@ -89,34 +89,34 @@ function PiRead:init()
 end
 
 function PiRead:onDispatcherRegisterActions()
-    Dispatcher:registerAction("piread_now_reading", {
+    Dispatcher:registerAction("marginalia_now_reading", {
         category = "none",
-        event    = "PiReadNowReading",
-        title    = _("Pi: Now Reading dashboard"),
+        event    = "MarginaliaReadNowReading",
+        title    = _("Now Reading dashboard"),
         reader   = true,
     })
-    Dispatcher:registerAction("piread_recap", {
+    Dispatcher:registerAction("marginalia_recap", {
         category = "none",
-        event    = "PiReadRecap",
-        title    = _("Pi: Recap where I left off"),
+        event    = "MarginaliaReadRecap",
+        title    = _("Recap where I left off"),
         reader   = true,
     })
-    Dispatcher:registerAction("piread_section", {
+    Dispatcher:registerAction("marginalia_section", {
         category = "none",
-        event    = "PiReadSection",
-        title    = _("Pi: Section X-Ray (this chapter)"),
+        event    = "MarginaliaReadSection",
+        title    = _("Book Index: Section (this chapter)"),
         reader   = true,
     })
-    Dispatcher:registerAction("piread_ask", {
+    Dispatcher:registerAction("marginalia_ask", {
         category = "none",
-        event    = "PiReadAsk",
-        title    = _("Pi: Ask Pi"),
+        event    = "MarginaliaReadAsk",
+        title    = _("AI: Ask"),
         reader   = true,
     })
-    Dispatcher:registerAction("piread_xray", {
+    Dispatcher:registerAction("marginalia_xray", {
         category = "none",
-        event    = "PiReadXRay",
-        title    = _("Pi: X-Ray browser"),
+        event    = "MarginaliaReadXRay",
+        title    = _("AI: Book Index browser"),
         reader   = true,
     })
 end
@@ -153,8 +153,8 @@ function PiRead:onPiReadXRay()
     if not self._xray then
         UIManager:show(InfoMessage:new{
             text    = self._xray_job_id
-                        and _("X-Ray is being generated. Try again in a minute.")
-                        or  _("No X-Ray data. Open a book that's in your Calibre library."),
+                        and _("Book Index is being generated. Try again in a minute.")
+                        or  _("No Book Index data. Open a book that's in your Calibre library."),
             timeout = 4,
         })
         return true
@@ -180,7 +180,7 @@ function PiRead:onDocLoad()
             self:flushNoteQueue(function(sent, remaining)
                 if sent > 0 then
                     UIManager:show(InfoMessage:new{
-                        text = T(_("Pi: synced %1 saved note(s) to vault."), sent),
+                        text = T(_("AI: synced %1 saved note(s) to vault."), sent),
                         timeout = 3,
                     })
                 end
@@ -196,7 +196,7 @@ function PiRead:onDocLoad()
     -- Load from device cache immediately (instant)
     local record, hash = Cache.findByTitle(title)
     if record and record.xray then
-        logger.info("piread: X-Ray loaded from local cache:", title)
+        logger.info("marginalia: Book Index loaded from local cache:", title)
         self._xray           = record.xray
         self._book_hash      = hash or record.book and record.book.epub_hash
         self._book_meta      = record.book
@@ -229,11 +229,11 @@ function PiRead:checkXRayFreshness(title, author)
     }, function(resp)
         if not resp then return end
         if resp.status == "current" then
-            logger.info("piread: X-Ray is current for", title)
+            logger.info("marginalia: Book Index is current for", title)
             return
         end
         if resp.status == "ready" and resp.xray then
-            logger.info("piread: X-Ray updated from bridge for", title)
+            logger.info("marginalia: Book Index updated from bridge for", title)
             self._xray      = resp.xray
             self._book_meta = resp.book
             self._book_hash = resp.book and resp.book.epub_hash
@@ -247,14 +247,14 @@ function PiRead:checkXRayFreshness(title, author)
                     mentions     = resp.mentions,
                     generated_at = resp.generated_at,
                 })
-                logger.info("piread: Device X-Ray cache refreshed for", title)
+                logger.info("marginalia: Device Book Index cache refreshed for", title)
             end
         elseif resp.status == "generating" then
             self._xray_job_id = resp.job_id
             self:schedulePoll()
         end
     end, function(err)
-        logger.warn("piread: freshness check error:", err)
+        logger.warn("marginalia: freshness check error:", err)
     end)
 end
 
@@ -308,7 +308,7 @@ end
 
 -- Animated loading indicator. Returns close() function.
 function PiRead:showLoadingAnim(label)
-    local base   = label or _("Asking Pi")
+    local base   = label or _("Asking AI")
     local dots   = { ".", "..", "..." }
     local idx    = 1
     local task   = nil
@@ -340,7 +340,7 @@ end
 -- ── X-Ray request & polling ───────────────────────────────────────────────────
 
 function PiRead:requestXRay(title, author, reading_pct)
-    logger.info("piread: requesting X-Ray for", title)
+    logger.info("marginalia: requesting Book Index for", title)
     Bridge:xrayInitAsync({
         book_title  = title,
         book_author = author,
@@ -348,19 +348,19 @@ function PiRead:requestXRay(title, author, reading_pct)
     }, function(resp)
         if not resp then return end
         if resp.status == "ready" then
-            logger.info("piread: X-Ray ready (cached=%s)", tostring(resp.cached))
+            logger.info("marginalia: Book Index ready (cached=%s)", tostring(resp.cached))
             self:_storeXRay(resp)
         elseif resp.status == "generating" then
-            logger.info("piread: X-Ray generating, job_id=%s", tostring(resp.job_id))
+            logger.info("marginalia: Book Index generating, job_id=%s", tostring(resp.job_id))
             self._xray_job_id = resp.job_id
             self:schedulePoll()
             UIManager:show(InfoMessage:new{
-                text    = _("Pi is building your X-Ray…"),
+                text    = _("Building Book Index…"),
                 timeout = 4,
             })
         end
     end, function(err)
-        logger.warn("piread: /xray/init error:", err)
+        logger.warn("marginalia: /book-index/init error:", err)
     end)
 end
 
@@ -383,7 +383,7 @@ function PiRead:pollXRayStatus()
 
     local resp, err = Bridge:xrayStatus(self._xray_job_id)
     if err then
-        logger.warn("piread: status poll error:", err)
+        logger.warn("marginalia: status poll error:", err)
         self:schedulePoll()  -- retry
         return
     end
@@ -392,17 +392,17 @@ function PiRead:pollXRayStatus()
         self._xray_job_id = nil
         self:_storeXRay(resp)
         UIManager:show(InfoMessage:new{
-            text    = _("Pi X-Ray ready!"),
+            text    = _("Book Index ready!"),
             timeout = 3,
         })
 
     elseif resp.status == "failed" then
         self._xray_job_id = nil
-        logger.warn("piread: X-Ray generation failed:", resp.error)
+        logger.warn("marginalia: Book Index generation failed:", resp.error)
 
     else
         -- Still generating
-        logger.info("piread: still generating (%s)", resp.progress or "…")
+        logger.info("marginalia: still generating (%s)", resp.progress or "…")
         self:schedulePoll()
     end
 end
@@ -449,11 +449,11 @@ function PiRead:_maybeOfferRecap()
     if not (self._xray and self._book_hash) then return end
     local pct = self:currentReadingPct()
     if pct < 5 or pct > 97 then return end
-    local seen = G_reader_settings:readSetting("piread_seen") or {}
+    local seen = G_reader_settings:readSetting("marginalia_seen") or {}
     local last = seen[self._book_hash] or 0
     local now  = os.time()
     seen[self._book_hash] = now
-    G_reader_settings:saveSetting("piread_seen", seen)
+    G_reader_settings:saveSetting("marginalia_seen", seen)
     if (now - last) < RESUME_GAP then return end
     UIManager:scheduleIn(1.5, function()
         local dialog
@@ -481,7 +481,7 @@ function PiRead:showRecap()
         return
     end
     local props = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
-    local close_loading = self:showLoadingAnim(_("Pi is recapping"))
+    local close_loading = self:showLoadingAnim(_("Recapping…"))
     Bridge:recapAsync({
         book_title  = props.title   or "",
         book_author = props.authors or "",
@@ -496,7 +496,7 @@ function PiRead:showRecap()
         })
     end, function(err)
         close_loading()
-        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
+        UIManager:show(InfoMessage:new{ text = T(_("AI: %1"), err), timeout = 6 })
     end)
 end
 
@@ -504,7 +504,7 @@ end
 function PiRead:showSectionXRay()
     if not (self.ui and self.ui.document) then return end
     if not NetworkMgr:isConnected() then
-        UIManager:show(InfoMessage:new{ text = _("Not connected — Section X-Ray needs the bridge."), timeout = 4 })
+        UIManager:show(InfoMessage:new{ text = _("Not connected — Section Book Index needs the bridge."), timeout = 4 })
         return
     end
     local props  = self.ui.doc_props or (self.ui.document and self.ui.document:getProps()) or {}
@@ -547,7 +547,7 @@ function PiRead:showSectionXRay()
         })
     end, function(err)
         close_loading()
-        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
+        UIManager:show(InfoMessage:new{ text = T(_("AI: %1"), err), timeout = 6 })
     end)
 end
 
@@ -559,7 +559,7 @@ function PiRead:hookHighlightDialog()
         if not s.enabled then return nil end
 
         return {
-            text = _("Ask Pi"),
+            text = _("Ask AI"),
             callback = function()
                 local sel = this.selected_text
                 if not (sel and sel.text and sel.text ~= "") then return end
@@ -615,7 +615,7 @@ function PiRead:hookHighlightDialog()
         if not s.enabled then return nil end
 
         return {
-            text = _("Pi: Save Note"),
+            text = _("AI: Save Note"),
             callback = function()
                 local sel = this.selected_text
                 if not (sel and sel.text and sel.text ~= "") then return end
@@ -696,7 +696,7 @@ function PiRead:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author
     end }})
 
     self._mode_dialog = ButtonDialog:new{
-        title       = _("Ask Pi"),
+        title       = _("Ask AI"),
         title_align = "center",
         buttons     = buttons,
     }
@@ -706,7 +706,7 @@ end
 -- ── Ask bridge (conversational) ───────────────────────────────────────────────
 
 function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mode_id, mode_label, captured)
-    local close_loading = self:showLoadingAnim(_("Asking Pi"))
+    local close_loading = self:showLoadingAnim(_("Asking AI"))
 
     local ctx = ""
     if prev_ctx and prev_ctx ~= "" then ctx = prev_ctx .. " " end
@@ -731,8 +731,8 @@ function PiRead:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mod
                            ctx ~= "" and ctx or nil, response, book_title, book_author)
     end, function(err)
         close_loading()
-        logger.warn("piread ask:", err)
-        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
+        logger.warn("marginalia ask:", err)
+        UIManager:show(InfoMessage:new{ text = T(_("AI: %1"), err), timeout = 6 })
     end)
 end
 
@@ -773,7 +773,7 @@ function PiRead:createHighlightWithNote(captured, label, answer)
     end
     local ok, index = pcall(function() return self.ui.annotation:addItem(item) end)
     if not ok or not index then
-        logger.warn("piread: addItem failed:", index)
+        logger.warn("marginalia: addItem failed:", index)
         return false
     end
     pcall(function() rh.view.footer:maybeUpdateFooter() end)
@@ -797,7 +797,7 @@ function PiRead:captureLookup(captured, mode_label, mode_id, query, context, res
         query       = query,
         response    = response,
         mode        = mode_label,
-        source      = "Ask Pi",
+        source      = "Ask AI",
         book_title  = (book_title and book_title ~= "") and book_title or nil,
         book_author = (book_author and book_author ~= "") and book_author or nil,
         reading_pct = self:currentReadingPct(),
@@ -871,7 +871,7 @@ function PiRead:flushNoteQueue(on_complete)
             sent[#sent + 1] = notes[i].id
             step(i + 1)
         end, function(err)
-            logger.warn("piread: note sync stopped at", i, ":", err)
+            logger.warn("marginalia: note sync stopped at", i, ":", err)
             Queue.removeIds(sent)
             if on_complete then on_complete(#sent, Queue.count()) end
         end)
@@ -890,7 +890,7 @@ function PiRead:showChatDialog()
 
     local dialog
     dialog = InputDialog:new{
-        title           = _("Ask Pi"),
+        title           = _("Ask AI"),
         input           = "",
         input_hint      = _("What's happening? Who is this? What did I miss?"),
         input_type      = "text",
@@ -918,7 +918,7 @@ function PiRead:showChatDialog()
 end
 
 function PiRead:chatBridge(question, book_title, book_author, reading_pct)
-    local close_loading = self:showLoadingAnim(_("Asking Pi"))
+    local close_loading = self:showLoadingAnim(_("Asking AI"))
     local page_text = self:getCurrentPageText(2500)
 
     Bridge:chatAsync({
@@ -931,15 +931,15 @@ function PiRead:chatBridge(question, book_title, book_author, reading_pct)
     }, function(response)
         close_loading()
         UIManager:show(TextViewer:new{
-            title  = _("Pi"),
+            title  = _("Marginalia"),
             text   = response,
             width  = math.floor(Screen:getWidth()  * 0.92),
             height = math.floor(Screen:getHeight() * 0.78),
         })
     end, function(err)
         close_loading()
-        logger.warn("piread chat:", err)
-        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 6 })
+        logger.warn("marginalia chat:", err)
+        UIManager:show(InfoMessage:new{ text = T(_("AI: %1"), err), timeout = 6 })
     end)
 end
 
@@ -947,8 +947,8 @@ end
 -- ── Menu ──────────────────────────────────────────────────────────────────────
 
 function PiRead:addToMainMenu(menu_items)
-    menu_items.piread = {
-        text         = _("Pi reading assistant"),
+    menu_items.marginalia = {
+        text         = _("Marginalia"),
         sorting_hint = "tools",
         sub_item_table = self:buildMenu(),
     }
@@ -963,7 +963,7 @@ function PiRead:buildMenu()
         callback = function()
             local s = self:loadSettings()
             if not s.enabled then
-                UIManager:show(InfoMessage:new{ text = _("Pi is disabled."), timeout = 3 })
+                UIManager:show(InfoMessage:new{ text = _("Marginalia is disabled."), timeout = 3 })
                 return
             end
             local pct = s.spoiler_free and self:currentReadingPct() or nil
@@ -974,7 +974,7 @@ function PiRead:buildMenu()
 
     -- Ask Pi (freeform chat)
     table.insert(items, {
-        text     = _("Ask Pi"),
+        text     = _("Ask AI"),
         callback = function()
             self:showChatDialog()
         end,
@@ -985,19 +985,19 @@ function PiRead:buildMenu()
         text_func = function()
             if self._xray then
                 local n = #(self._xray.characters or {})
-                return string.format(_("X-Ray (%d characters)"), n)
+                return string.format(_("Book Index (%d characters)"), n)
             elseif self._xray_job_id then
-                return _("X-Ray (building…)")
+                return _("Book Index (building…)")
             else
-                return _("X-Ray (not available)")
+                return _("Book Index (not available)")
             end
         end,
         callback = function()
             if not self._xray then
                 UIManager:show(InfoMessage:new{
                     text    = self._xray_job_id
-                                and _("X-Ray is being generated. Try again in a minute.")
-                                or  _("No X-Ray data. Open a book that's in your Calibre library."),
+                                and _("Book Index is being generated. Try again in a minute.")
+                                or  _("No Book Index data. Open a book that's in your Calibre library."),
                     timeout = 5,
                 })
                 return
@@ -1017,7 +1017,7 @@ function PiRead:buildMenu()
 
     -- Section X-Ray for the current chapter
     table.insert(items, {
-        text         = _("Section X-Ray (this chapter)"),
+        text         = _("Section Book Index (this chapter)"),
         enabled_func = function() return self.ui and self.ui.document ~= nil end,
         callback     = function() self:showSectionXRay() end,
     })
@@ -1053,7 +1053,7 @@ function PiRead:buildMenu()
         callback = function()
             local s = self:loadSettings(); s.auto_capture = not s.auto_capture; self:saveSettings(s)
         end,
-        help_text = _("When on, a successful Ask Pi lookup highlights the passage "
+        help_text = _("When on, a successful Ask AI lookup highlights the passage "
             .. "(note = Pi's answer) and saves the passage + answer to the book's Obsidian note."),
     })
 
@@ -1071,7 +1071,7 @@ function PiRead:buildMenu()
 
     -- Rebuild X-Ray
     table.insert(items, {
-        text = _("Rebuild X-Ray for this book"),
+        text = _("Rebuild Book Index for this book"),
         enabled_func = function()
             return self.ui and self.ui.document ~= nil
         end,

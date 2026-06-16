@@ -1,5 +1,5 @@
 --[[--
-bridge.lua — HTTP client for piread-bridge server on Mac.
+bridge.lua — HTTP client for the marginalia bridge server.
 
 Public API:
   Bridge:ask(params)              → response_text | nil, err
@@ -15,7 +15,7 @@ local rapidjson  = require("rapidjson")
 local socketutil = require("socketutil")
 local logger     = require("logger")
 
-local Async = require("piread_async")
+local Async = require("marginalia_async")
 
 local Bridge = {
     host          = "macbook.local",
@@ -75,7 +75,7 @@ function Bridge:_post(path, params)
     })
     socketutil:reset_timeout()
     if not ok then
-        logger.warn("piread bridge:", code)
+        logger.warn("marginalia bridge:", code)
         return nil, "Bridge unreachable (" .. (code or "no route") .. ")"
     end
     -- Accept both 200 (ready) and 202 (generating)
@@ -165,13 +165,13 @@ end
 --   {status="generating", job_id="...", poll_url}  ← background job
 -- or (nil, err)
 function Bridge:xrayInit(params)
-    return self:_post("/xray/init", params)
+    return self:_post("/book-index/init", params)
 end
 
 --- Async X-Ray init — non-blocking. Calls on_done(full_response_table) or on_error(err).
 -- Used on book open so a slow/flaky network never freezes the UI thread.
 function Bridge:xrayInitAsync(params, on_done, on_error)
-    return Async.post(self:url("/xray/init"), params, on_done, on_error, { raw = true })
+    return Async.post(self:url("/book-index/init"), params, on_done, on_error, { raw = true })
 end
 
 --- Poll an in-progress X-Ray generation job.
@@ -179,12 +179,12 @@ end
 -- threshold on flaky networks; pollXRayStatus retries on timeout.
 -- Returns response table or (nil, err).
 function Bridge:xrayStatus(job_id)
-    return self:_get("/xray/status/" .. tostring(job_id), 2, 3)
+    return self:_get("/book-index/status/" .. tostring(job_id), 2, 3)
 end
 
 --- Report reading progress to keep the bridge cache current.
 function Bridge:xrayProgress(book_hash, reading_pct)
-    return self:_post("/xray/progress", {
+    return self:_post("/book-index/progress", {
         book_hash   = book_hash,
         reading_pct = reading_pct,
     })
@@ -241,7 +241,7 @@ end
 
 --- Save-to-vault — POST /note. Calls on_done(resp_table) or on_error(err).
 -- Uses a SHORT BLOCKING request, not the fork (Async): the note flush often runs
--- concurrently with the /xray/init subprocess on book-open, and forked siblings
+-- concurrently with the /book-index/init subprocess on book-open, and forked siblings
 -- cross-talk through inherited pipe FDs — the note latches onto the X-Ray
 -- subprocess's 200 JSON (no error field → false success), clearing the queue while
 -- the real POST never goes out. Notes are tiny, so a brief blocking call is safe.
@@ -263,7 +263,7 @@ function Bridge:noteAsync(params, on_done, on_error)
         if on_error then on_error("encode: " .. (enc_err or "?")) end
         return
     end
-    logger.warn("piread DBG noteAsync: POST " .. self:url("/note") .. " bytes=" .. tostring(#body_json))
+    logger.warn("marginalia DBG noteAsync: POST " .. self:url("/note") .. " bytes=" .. tostring(#body_json))
     local sink = {}
     socketutil:set_timeout(4, 7)
     local ok, code = http.request({
@@ -291,7 +291,7 @@ function Bridge:noteAsync(params, on_done, on_error)
     elseif type(resp.error) == "string" and resp.error ~= "" then
         if on_error then on_error(resp.error) end
     else
-        logger.info("piread: note synced to vault", resp.path or "")
+        logger.info("marginalia: note synced to vault", resp.path or "")
         if on_done then on_done(resp) end
     end
 end
