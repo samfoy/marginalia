@@ -22,6 +22,8 @@ Config via environment variables (all optional):
   MARGINALIA_TOKEN        Shared secret (empty = no auth)  (default: "")
   MARGINALIA_MAX_TOKENS   Max tokens for /ask responses    (default: 600)
   MARGINALIA_VAULT        Obsidian vault root              (default: ~/Documents)
+  MARGINALIA_OPENAI_API_KEY    OpenAI API key for direct OpenAI models   (default: "")
+  MARGINALIA_ANTHROPIC_API_KEY Anthropic API key for direct Anthropic    (default: "")
 """
 
 import io

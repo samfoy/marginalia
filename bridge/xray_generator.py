@@ -266,25 +266,98 @@ def _invoke_bedrock(prompt: str, model_id: str, instructions: str | None = None)
     return json.loads(resp["body"].read())["content"][0]["text"]
 
 
+def _invoke_openai_direct(prompt: str, model_id: str,
+                           instructions: str | None = None) -> str:
+    """Call an OpenAI model directly via the openai SDK."""
+    try:
+        import openai
+    except ImportError:
+        raise RuntimeError("openai package not installed — pip install openai")
+    api_key = os.environ.get("MARGINALIA_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("MARGINALIA_OPENAI_API_KEY not set")
+    client = openai.OpenAI(api_key=api_key)
+    model = model_id.removeprefix("openai:")
+    messages: list[dict] = []
+    if instructions:
+        messages.append({"role": "system", "content": instructions})
+    messages.append({"role": "user", "content": prompt})
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=MAX_TOKENS,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _invoke_anthropic_direct(prompt: str, model_id: str,
+                              instructions: str | None = None) -> str:
+    """Call an Anthropic model directly via the anthropic SDK."""
+    try:
+        import anthropic
+    except ImportError:
+        raise RuntimeError("anthropic package not installed — pip install anthropic")
+    api_key = os.environ.get("MARGINALIA_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("MARGINALIA_ANTHROPIC_API_KEY not set")
+    client = anthropic.Anthropic(api_key=api_key)
+    model = model_id.removeprefix("anthropic:")
+    msg = client.messages.create(
+        model=model,
+        max_tokens=MAX_TOKENS,
+        system=instructions if instructions is not None else _SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text.strip()
+
+
 def _invoke_one(prompt: str, model_id: str, instructions: str | None = None,
                 reasoning_effort: str | None = None) -> str:
     """Single attempt against one model, routed by id prefix. Raises on failure."""
-    if model_id.startswith("openai."):
+    if model_id.startswith("openai:"):          # direct OpenAI API
+        return _invoke_openai_direct(prompt, model_id, instructions=instructions)
+    if model_id.startswith("anthropic:"):       # direct Anthropic API
+        return _invoke_anthropic_direct(prompt, model_id, instructions=instructions)
+    if model_id.startswith("openai."):          # legacy bedrock-mantle
         return _call_gpt(prompt, model_id, instructions=instructions,
                          reasoning_effort=reasoning_effort)
-    return _invoke_bedrock(prompt, model_id, instructions=instructions)
+    return _invoke_bedrock(prompt, model_id, instructions=instructions)  # Bedrock
 
 
 def model_chain(primary: str | None = None) -> list[str]:
-    """Ordered fallback chain. Explicit via MARGINALIA_MODEL_CHAIN, else derived:
-    primary (default MODEL_ID) → openai.gpt-5.4 → Sonnet, de-duplicated."""
+    """Ordered fallback chain. Explicit via MARGINALIA_MODEL_CHAIN, else derived
+    from the primary — provider-aware so non-AWS users don’t get AWS fallbacks."""
     if MODEL_CHAIN_ENV.strip():
-        chain = [m.strip() for m in MODEL_CHAIN_ENV.split(",") if m.strip()]
+        return [m.strip() for m in MODEL_CHAIN_ENV.split(",") if m.strip()]
+
+    p = primary or MODEL_ID
+    chain: list[str] = [p] if p else []
+
+    has_openai    = bool(os.environ.get("MARGINALIA_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+    has_anthropic = bool(os.environ.get("MARGINALIA_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+
+    if p.startswith("openai:"):
+        # Direct OpenAI primary → cheap OpenAI fallback, then Anthropic if available
+        candidates = ["openai:gpt-4o-mini", "anthropic:claude-haiku-3-5"]
+    elif p.startswith("anthropic:"):
+        # Direct Anthropic → cheap Anthropic fallback
+        candidates = ["anthropic:claude-haiku-3-5"]
+    elif p.startswith("openai."):
+        # bedrock-mantle primary → existing gpt-5.4 + Bedrock final fallback
+        candidates = ["openai.gpt-5.4", FALLBACK_MODEL_ID]
     else:
-        chain = []
-        for m in (primary or MODEL_ID, "openai.gpt-5.4", FALLBACK_MODEL_ID):
-            if m and m not in chain:
-                chain.append(m)
+        # Bedrock direct → existing Bedrock fallback
+        candidates = [FALLBACK_MODEL_ID]
+
+    for c in candidates:
+        if c in chain:
+            continue
+        if c.startswith("openai:") and not has_openai:
+            continue
+        if c.startswith("anthropic:") and not has_anthropic:
+            continue
+        chain.append(c)
+
     return chain
 
 
