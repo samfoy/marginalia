@@ -1,5 +1,5 @@
 --[[--
-piread_xray.lua — Book Index browser UI for the piread plugin.
+marginalia_xray.lua — Book Index browser UI for marginalia.
 
 Displays characters, locations, timeline, and terms from the local
 X-Ray cache. Entirely offline — no network calls.

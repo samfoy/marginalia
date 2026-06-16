@@ -23,7 +23,7 @@ local logger        = require("logger")
 local T             = require("ffi/util").template
 local _             = require("gettext")
 
-local XRayUI = require("piread_xray")
+local XRayUI = require("marginalia_xray")
 
 local Context = {}
 
