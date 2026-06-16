@@ -122,7 +122,7 @@ function PiRead:onDispatcherRegisterActions()
     })
 end
 
-function PiRead:onPiReadNowReading()
+function PiRead:onMarginaliaReadNowReading()
     local s = self:loadSettings()
     if not s.enabled then return end
     local pct = s.spoiler_free and self:currentReadingPct() or nil
@@ -130,25 +130,25 @@ function PiRead:onPiReadNowReading()
     Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end)
 end
 
-function PiRead:onPiReadRecap()
+function PiRead:onMarginaliaReadRecap()
     if not self:loadSettings().enabled then return true end
     self:showRecap()
     return true
 end
 
-function PiRead:onPiReadSection()
+function PiRead:onMarginaliaReadSection()
     if not self:loadSettings().enabled then return true end
     self:showSectionXRay()
     return true
 end
 
-function PiRead:onPiReadAsk()
+function PiRead:onMarginaliaReadAsk()
     if not self:loadSettings().enabled then return true end
     self:showChatDialog()
     return true
 end
 
-function PiRead:onPiReadXRay()
+function PiRead:onMarginaliaReadXRay()
     local s = self:loadSettings()
     if not s.enabled then return true end
     if not self._xray then
