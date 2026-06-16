@@ -194,14 +194,14 @@ echo "✓ LaunchAgent loaded — starts at login, restarts on crash"
 
 echo ""
 echo "Waiting for bridge to start (may take 10–15s if sentence-transformers loads on first run)..."
-for _i in 1 2 3 4; do
+for _i in 1 2 3 4 5 6 7 8; do
     sleep 4
     if curl -sf http://localhost:7731/ping >/dev/null 2>&1; then
         echo "✓ Bridge is alive — http://localhost:7731/ping → pong"
         break
     fi
-    if [[ $_i -eq 4 ]]; then
-        echo "⚠ Bridge didn't respond after 16s — it may still be loading."
+    if [[ $_i -eq 8 ]]; then
+        echo "⚠ Bridge didn't respond after 32s — it may still be loading or failed to start."
         echo "  Check logs: tail -f $LOG_PATH"
     fi
 done

@@ -158,7 +158,7 @@ All settings via environment variables.
 | `MARGINALIA_OPENAI_API_KEY` | *(empty)* | OpenAI API key (also checks `OPENAI_API_KEY`) |
 | `MARGINALIA_ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key (also checks `ANTHROPIC_API_KEY`) |
 | `MARGINALIA_MODEL_ID` | `openai:gpt-4o` | Primary model |
-| `MARGINALIA_FALLBACK_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | Terminal fallback |
+| `MARGINALIA_FALLBACK_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | Terminal fallback (Bedrock/bedrock-mantle primary only; ignored for direct OpenAI/Anthropic) |
 | `MARGINALIA_MODEL_CHAIN` | *(auto)* | Explicit comma-separated chain, overrides auto-derivation |
 | `MARGINALIA_MODEL_COOLDOWN_S` | `120` | Circuit breaker window (seconds) |
 | `MARGINALIA_COMPANION_EFFORT` | `low` | Reasoning effort `none\|low\|medium\|high` (OpenAI/Bedrock; no-op for Anthropic direct) |

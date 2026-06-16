@@ -7,9 +7,17 @@ Routes:
   GET  /index                      Book Index cache index
   GET  /book-index/status/<job_id> poll a background Book Index generation job
   POST /ask                        conversational query (explain/translate/summarize)
+  POST /chat                       free Q&A grounded in reading position (RAG)
+  POST /recap                      "where you left off" summary
+  POST /wiki                       AI Wiki deep-dive on one entity
+  POST /section                    chapter-by-chapter analysis
   POST /note                       save highlighted passage + context to Obsidian vault
   POST /book-index/init            find book in Calibre, generate Book Index, cache it
   POST /book-index/progress        update reading position for a cached book
+
+  GET  /v1/models                  OpenAI-compat model list (for KO Assistant)
+  POST /v1/chat/completions        OpenAI-compat proxy → Bedrock (for KO Assistant);
+                                   Bedrock-only, does NOT use the provider fallback chain
 
   GET  /monitor               live request-monitor dashboard (HTML)
   GET  /monitor/data          monitor snapshot (JSON, polled by the dashboard)
