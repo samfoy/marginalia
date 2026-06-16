@@ -47,8 +47,7 @@ fi
 echo "✓ Python: $PYTHON ($("$PYTHON" --version))"
 
 # Warn if marginalia is not importable from the selected Python
-if ! "$PYTHON" -c "import bridge.cli" 2>/dev/null && \
-   ! "$PYTHON" -c "import marginalia" 2>/dev/null; then
+if ! "$PYTHON" -c "import marginalia" 2>/dev/null; then
     echo ""
     echo "⚠ Warning: marginalia not importable from $PYTHON."
     echo "  If you installed into a venv, activate it first: source .venv/bin/activate"
@@ -125,7 +124,7 @@ if [[ "$API_KEY_VAR" == "MARGINALIA_ANTHROPIC_API_KEY" ]]; then
     MODEL_DEFAULT="${MARGINALIA_MODEL_ID:-anthropic:claude-opus-4-5}"
 elif [[ "$API_KEY_VAR" == "MARGINALIA_OPENAI_API_KEY" ]]; then
     MODEL_DEFAULT="${MARGINALIA_MODEL_ID:-openai:gpt-4o}"
-elif [[ -n "${MARGINALIA_AWS_PROFILE:-}" ]]; then
+elif [[ "$API_KEY_VAR" == "MARGINALIA_AWS_PROFILE" ]]; then
     MODEL_DEFAULT="${MARGINALIA_MODEL_ID:-us.anthropic.claude-sonnet-4-6}"
 else
     MODEL_DEFAULT="${MARGINALIA_MODEL_ID:-openai:gpt-4o}"
@@ -194,14 +193,18 @@ echo "✓ LaunchAgent loaded — starts at login, restarts on crash"
 # ── Health check ──────────────────────────────────────────────────────────────
 
 echo ""
-echo "Waiting for bridge to start..."
-sleep 3
-if curl -sf http://localhost:7731/ping >/dev/null; then
-    echo "✓ Bridge is alive — http://localhost:7731/ping → pong"
-else
-    echo "⚠ Bridge didn't respond yet — it may still be starting."
-    echo "  Check logs: tail -f $LOG_PATH"
-fi
+echo "Waiting for bridge to start (may take 10–15s if sentence-transformers loads on first run)..."
+for _i in 1 2 3 4; do
+    sleep 4
+    if curl -sf http://localhost:7731/ping >/dev/null 2>&1; then
+        echo "✓ Bridge is alive — http://localhost:7731/ping → pong"
+        break
+    fi
+    if [[ $_i -eq 4 ]]; then
+        echo "⚠ Bridge didn't respond after 16s — it may still be loading."
+        echo "  Check logs: tail -f $LOG_PATH"
+    fi
+done
 
 # ── Next steps ────────────────────────────────────────────────────────────────
 

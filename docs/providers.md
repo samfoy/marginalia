@@ -72,6 +72,8 @@ export MARGINALIA_MODEL_ID=anthropic:claude-opus-4-5
 | Faster / cheaper | `anthropic:claude-haiku-3-5` | Good for companion calls |
 | Balanced | `anthropic:claude-sonnet-4-5` | Middle ground |
 
+> **Note:** Bedrock and Anthropic direct track model availability independently — version numbers may differ (e.g. `anthropic:claude-sonnet-4-5` vs `us.anthropic.claude-sonnet-4-6`). This is expected, not a typo.
+
 ### Fallback chain
 
 With an Anthropic key:
