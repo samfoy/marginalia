@@ -180,7 +180,7 @@ All settings via environment variables.
 |---|---|---|
 | `openai:` | OpenAI API directly | `openai:gpt-4o` |
 | `anthropic:` | Anthropic API directly | `anthropic:claude-haiku-3-5` |
-| `openai.` | AWS bedrock-mantle (**Amazon-internal only**) | `openai.gpt-4o` |
+| `openai.` | [bedrock-mantle](https://github.com/samfoy/pi-bedrock-mantle) proxy (requires allowlisting) | `openai.gpt-5.5` |
 | *(other)* | AWS Bedrock invoke_model | `us.anthropic.claude-sonnet-4-6` |
 
 The fallback chain is derived automatically from the primary model's provider — non-AWS primaries get provider-appropriate cheap fallbacks, not useless AWS fallbacks.
