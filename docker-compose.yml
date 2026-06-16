@@ -39,8 +39,10 @@ services:
       # - MARGINALIA_TOKEN=${MARGINALIA_TOKEN:-}
 
     volumes:
-      # Obsidian vault — book notes are written here
-      - ${MARGINALIA_VAULT_HOST:-~/Documents}:/vault
+      # Obsidian vault — book notes are written here.
+      # Set MARGINALIA_VAULT in your .env to your vault path.
+      # The same value controls both what's mounted and where the bridge writes.
+      - ${MARGINALIA_VAULT:-~/Documents}:/vault
 
       # Calibre library — set CALIBRE_HOST to your library directory
       # Uncomment if you use Calibre:

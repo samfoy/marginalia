@@ -60,11 +60,9 @@ def _hdr(msg: str):  print(f"\n{bold(cyan('── ' + msg + ' ──'))}")
 
 def _local_ip() -> str:
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
     except Exception:
         return "?.?.?.?"
 
@@ -82,7 +80,7 @@ def _find_vaults(max_results: int = 8) -> list[Path]:
     candidates = [
         Path.home() / "Documents",
         Path.home() / "Dropbox",
-        Path.home() / "iCloud Drive",
+        Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs",
         Path.home() / "OneDrive",
         Path.home(),
     ]
@@ -226,7 +224,7 @@ def _setup_vault(cfg: dict[str, str]) -> None:
     existing = cfg.get("MARGINALIA_VAULT", "")
 
     if vaults:
-        opts = [(str(v), dim(str(v).replace(str(Path.home()), "~"))) for v in vaults]
+        opts = [(str(v).replace(str(Path.home()), "~"), "") for v in vaults]
         opts.append(("Enter path manually", ""))
         choice = _pick("Which Obsidian vault should book notes go to?", opts)
         if choice <= len(vaults):
@@ -278,13 +276,16 @@ def _install_linux(cfg: dict[str, str]) -> None:
         "WorkingDirectory=%h/marginalia/bridge",
         f"WorkingDirectory={BRIDGE_DIR}",
     )
-    # Inject env vars
-    env_lines = "\n".join(f"Environment={k}={v}" for k, v in cfg.items()
-                           if k.startswith("MARGINALIA_"))
-    content = content.replace(
-        "Environment=MARGINALIA_MODEL_ID=openai:gpt-4o\n",
-        env_lines + "\n",
+    # Strip ALL existing uncommented Environment= lines (they have wrong defaults)
+    content = re.sub(r"^Environment=[^\n]*\n", "", content, flags=re.MULTILINE)
+    # Build fresh env block, quoting values that contain spaces
+    env_lines = "\n".join(
+        f'Environment="{k}={v}"' if " " in v else f"Environment={k}={v}"
+        for k, v in sorted(cfg.items())
+        if k.startswith("MARGINALIA_")
     )
+    # Insert before Restart= so it lands in the right section
+    content = content.replace("\nRestart=on-failure", f"\n{env_lines}\nRestart=on-failure", 1)
     service_dst.write_text(content)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
     subprocess.run(["systemctl", "--user", "enable", "--now", "marginalia"], check=False)
