@@ -62,7 +62,7 @@ import monitor
 
 PORT       = int(os.environ.get("MARGINALIA_PORT", 7731))
 PROFILE    = os.environ.get("MARGINALIA_AWS_PROFILE", "")
-# server.py uses Sonnet for /ask and knowledge-only X-Ray — never GPT (no Bedrock invoke_model support)
+# Companion calls use the configured model chain (openai: → direct OpenAI, anthropic: → direct Anthropic, else → Bedrock).
 MODEL_ID   = os.environ.get("MARGINALIA_MODEL_ID", "openai:gpt-4o")
 TOKEN      = os.environ.get("MARGINALIA_TOKEN", "")
 MAX_TOKENS = int(os.environ.get("MARGINALIA_MAX_TOKENS", 600))

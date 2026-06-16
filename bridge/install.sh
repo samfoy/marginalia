@@ -101,7 +101,19 @@ if [[ -z "$API_KEY_VAR" ]]; then
     fi
 fi
 
-[[ -n "$API_KEY_VAR" ]] && echo "✓ API key: ${API_KEY_VAR} (${API_KEY_VAL:0:8}...)" || echo "⚠ No API key set — Book Index generation will fail until you add one to $PLIST_DST" 
+[[ -n "$API_KEY_VAR" ]] && echo "✓ API key: ${API_KEY_VAR} (${API_KEY_VAL:0:8}...)" || echo "⚠ No API key set — Book Index generation will fail until you add one to $PLIST_DST"
+
+# Set a sensible default model ID to match the provider
+if [[ "$API_KEY_VAR" == "MARGINALIA_ANTHROPIC_API_KEY" ]]; then
+    MODEL_DEFAULT="${MARGINALIA_MODEL_ID:-anthropic:claude-opus-4-5}"
+elif [[ "$API_KEY_VAR" == "MARGINALIA_OPENAI_API_KEY" ]]; then
+    MODEL_DEFAULT="${MARGINALIA_MODEL_ID:-openai:gpt-4o}"
+elif [[ -n "${MARGINALIA_AWS_PROFILE:-}" ]]; then
+    MODEL_DEFAULT="${MARGINALIA_MODEL_ID:-us.anthropic.claude-sonnet-4-6}"
+else
+    MODEL_DEFAULT="${MARGINALIA_MODEL_ID:-openai:gpt-4o}"
+fi
+echo "✓ Model: $MODEL_DEFAULT (set MARGINALIA_MODEL_ID to override)" 
 
 # ── Build PATH for the LaunchAgent (inherits brew, pyenv, etc.) ───────────────
 
@@ -125,17 +137,20 @@ sed \
   "$PLIST_TEMPLATE" > "$PLIST_DST"
 
 # Uncomment and populate the API key in the installed plist (if collected)
-if [[ -n "${API_KEY_VAR:-}" && -n "${API_KEY_VAL:-}" ]]; then
-    python3 - "$PLIST_DST" "$API_KEY_VAR" "$API_KEY_VAL" << 'PYEOF'
+if [[ -n "${API_KEY_VAR:-}" || -n "${MODEL_DEFAULT:-}" ]]; then
+    python3 - "$PLIST_DST" "${API_KEY_VAR:-}" "${API_KEY_VAL:-}" "${MODEL_DEFAULT:-}" << 'PYEOF'
 import re, sys
-path, var, val = sys.argv[1], sys.argv[2], sys.argv[3]
+path, var, val, model = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else ''
 plist = open(path).read()
-live = f'        <key>{var}</key>\n        <string>{val}</string>'
-# Uncomment existing commented-out entry
-plist = re.sub(rf'<!--\s*<key>{re.escape(var)}</key><string>[^<]*</string>\s*-->', live, plist)
-# If not found as a comment, insert before MARGINALIA_PORT
-if f'<key>{var}</key>' not in plist:
-    plist = plist.replace('<key>MARGINALIA_PORT</key>', f'{live}\n        <key>MARGINALIA_PORT</key>', 1)
+# Inject API key if provided
+if var and val:
+    live = f'        <key>{var}</key>\n        <string>{val}</string>'
+    plist = re.sub(rf'<!--\s*<key>{re.escape(var)}</key><string>[^<]*</string>\s*-->', live, plist)
+    if f'<key>{var}</key>' not in plist:
+        plist = plist.replace('<key>MARGINALIA_PORT</key>', f'{live}\n        <key>MARGINALIA_PORT</key>', 1)
+# Update model ID to match provider
+if model:
+    plist = re.sub(r'(<key>MARGINALIA_MODEL_ID</key>\s*<string>)[^<]*(</string>)', rf'\g<1>{model}\2', plist)
 open(path, 'w').write(plist)
 PYEOF
 fi

@@ -111,7 +111,7 @@ bedrock-mantle (`bedrock-mantle.us-east-2.api.aws`) gives access to GPT models u
 
 ```bash
 export MARGINALIA_AWS_PROFILE=your-profile
-export MARGINALIA_MODEL_ID=openai.gpt-5.5  # bedrock-mantle; requires allowlisted AWS account
+export MARGINALIA_MODEL_ID=openai.gpt-4o  # bedrock-mantle; requires allowlisted AWS account
 ```
 
 ### IAM setup
