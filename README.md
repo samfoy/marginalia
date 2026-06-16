@@ -6,6 +6,13 @@ AI reading companion for KOReader — Book Index, position-bounded RAG, highligh
 
 **[→ First-time setup guide](docs/setup.md)** · [AI providers](docs/providers.md) · [Calibre](docs/calibre.md) · [Obsidian](docs/obsidian.md)
 
+<p align="center">
+  <img src="docs/screenshots/book-index-menu.png" width="210" alt="Book Index menu">
+  <img src="docs/screenshots/book-index-browser.png" width="210" alt="Book Index browser">
+  <img src="docs/screenshots/ask-ai.png" width="210" alt="Ask AI">
+  <img src="docs/screenshots/section-analysis.png" width="210" alt="Section analysis">
+</p>
+
 ---
 
 ## What it does
