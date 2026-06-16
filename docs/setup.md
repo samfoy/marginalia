@@ -67,25 +67,28 @@ Minimum required settings:
 # .env — pick ONE provider block
 
 # OpenAI:
-MARGINALIA_OPENAI_API_KEY=sk-...
-MARGINALIA_MODEL_ID=openai:gpt-4o
+export MARGINALIA_OPENAI_API_KEY=sk-...
+export MARGINALIA_MODEL_ID=openai:gpt-4o
 
 # Anthropic:
-# MARGINALIA_ANTHROPIC_API_KEY=sk-ant-...
-# MARGINALIA_MODEL_ID=anthropic:claude-opus-4-5
+# export MARGINALIA_ANTHROPIC_API_KEY=sk-ant-...
+# export MARGINALIA_MODEL_ID=anthropic:claude-opus-4-5
 
 # Your Obsidian vault:
-MARGINALIA_VAULT=~/Documents/YourVault
+export MARGINALIA_VAULT=~/Documents/YourVault
 ```
 
 Then load it:
 
 ```bash
-source .env          # macOS / Linux
-# Windows (PowerShell): Get-Content .env | ForEach-Object { $k,$v=$_.Split('=',2); [System.Environment]::SetEnvironmentVariable($k,$v,'Process') }
+# macOS / Linux — use set -a so vars are exported to child processes:
+set -a && source .env && set +a
+
+# Windows (PowerShell):
+Get-Content .env | Where-Object { $_ -match '^[^#].+=.' } | ForEach-Object { $k,$v=$_.Split('=',2); [System.Environment]::SetEnvironmentVariable($k.Trim(),$v.Trim(),'Process') }
 ```
 
-> **Note:** `source .env` only applies to the current terminal session. For permanent configuration (auto-start service), use the LaunchAgent (`install.sh`) or systemd unit — they bake the env vars into the service definition.
+> **Note:** This only applies to the current terminal session. For permanent configuration use the LaunchAgent (`install.sh`) or systemd unit — they bake env vars into the service definition.
 
 ---
 

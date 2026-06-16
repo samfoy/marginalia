@@ -1,5 +1,5 @@
 """
-xray_generator.py — Generate X-Ray entity graphs from EPUB content via Bedrock.
+xray_generator.py — Generate Book Index data from EPUB content via any configured LLM provider.
 
 Three strategies based on book size:
   single_shot   < 560K chars  (~140K tokens) — one Claude call, full text

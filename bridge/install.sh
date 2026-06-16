@@ -69,6 +69,40 @@ fi
 VAULT_PATH="${VAULT_PATH/#\~/$HOME}"
 echo "✓ Vault: $VAULT_PATH"
 
+# ── API key (optional at install time — can also be added to plist later) ────
+
+API_KEY_VAR=""
+API_KEY_VAL=""
+
+# Use env vars if already set
+if [[ -n "${MARGINALIA_OPENAI_API_KEY:-}" ]]; then
+    API_KEY_VAR="MARGINALIA_OPENAI_API_KEY"
+    API_KEY_VAL="$MARGINALIA_OPENAI_API_KEY"
+elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    API_KEY_VAR="MARGINALIA_OPENAI_API_KEY"
+    API_KEY_VAL="$OPENAI_API_KEY"
+elif [[ -n "${MARGINALIA_ANTHROPIC_API_KEY:-}" ]]; then
+    API_KEY_VAR="MARGINALIA_ANTHROPIC_API_KEY"
+    API_KEY_VAL="$MARGINALIA_ANTHROPIC_API_KEY"
+elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    API_KEY_VAR="MARGINALIA_ANTHROPIC_API_KEY"
+    API_KEY_VAL="$ANTHROPIC_API_KEY"
+fi
+
+if [[ -z "$API_KEY_VAR" ]]; then
+    echo ""
+    echo "No API key found in environment."
+    echo "Providers: openai (sk-...) or anthropic (sk-ant-...). Leave empty to add later."
+    read -r -p "  API key (or Enter to skip): " API_KEY_VAL
+    if [[ "$API_KEY_VAL" == sk-ant-* ]]; then
+        API_KEY_VAR="MARGINALIA_ANTHROPIC_API_KEY"
+    elif [[ -n "$API_KEY_VAL" ]]; then
+        API_KEY_VAR="MARGINALIA_OPENAI_API_KEY"
+    fi
+fi
+
+[[ -n "$API_KEY_VAR" ]] && echo "✓ API key: ${API_KEY_VAR} (${API_KEY_VAL:0:8}...)" || echo "⚠ No API key set — Book Index generation will fail until you add one to $PLIST_DST" 
+
 # ── Build PATH for the LaunchAgent (inherits brew, pyenv, etc.) ───────────────
 
 PATH_DIRS="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -89,6 +123,22 @@ sed \
   -e "s|{{LOG_PATH}}|$LOG_PATH|g" \
   -e "s|{{PATH_DIRS}}|$PATH_DIRS|g" \
   "$PLIST_TEMPLATE" > "$PLIST_DST"
+
+# Uncomment and populate the API key in the installed plist (if collected)
+if [[ -n "${API_KEY_VAR:-}" && -n "${API_KEY_VAL:-}" ]]; then
+    python3 - "$PLIST_DST" "$API_KEY_VAR" "$API_KEY_VAL" << 'PYEOF'
+import re, sys
+path, var, val = sys.argv[1], sys.argv[2], sys.argv[3]
+plist = open(path).read()
+live = f'        <key>{var}</key>\n        <string>{val}</string>'
+# Uncomment existing commented-out entry
+plist = re.sub(rf'<!--\s*<key>{re.escape(var)}</key><string>[^<]*</string>\s*-->', live, plist)
+# If not found as a comment, insert before MARGINALIA_PORT
+if f'<key>{var}</key>' not in plist:
+    plist = plist.replace('<key>MARGINALIA_PORT</key>', f'{live}\n        <key>MARGINALIA_PORT</key>', 1)
+open(path, 'w').write(plist)
+PYEOF
+fi
 
 echo "✓ Installed plist → $PLIST_DST"
 
@@ -125,16 +175,17 @@ fi
 
 echo ""
 echo "────────────────────────────────────────────────────────"
-echo "Next: set your AI provider key in $PLIST_DST"
-echo "  Edit the EnvironmentVariables section and add:"
-echo "    MARGINALIA_OPENAI_API_KEY   for OpenAI"
-echo "    MARGINALIA_ANTHROPIC_API_KEY for Anthropic"
-echo "  Then reload: launchctl bootout ${GUI_DOMAIN}/${LABEL}"
-echo "              launchctl bootstrap ${GUI_DOMAIN} $PLIST_DST"
-echo ""
+if [[ -z "${API_KEY_VAR:-}" ]]; then
+    echo "⚠  ACTION REQUIRED: no API key was configured."
+    echo "   Edit $PLIST_DST"
+    echo "   Uncomment MARGINALIA_OPENAI_API_KEY or MARGINALIA_ANTHROPIC_API_KEY"
+    echo "   Then reload:"
+    echo "     launchctl bootout ${GUI_DOMAIN}/${LABEL}"
+    echo "     launchctl bootstrap ${GUI_DOMAIN} $PLIST_DST"
+    echo ""
+fi
 echo "Bridge management:"
-echo "  launchctl stop  ${LABEL}          # stop"
-echo "  launchctl start ${LABEL}          # start"
-echo "  launchctl bootout ${GUI_DOMAIN}/${LABEL}  # remove"
+echo "  launchctl kill TERM gui/$(id -u)/${LABEL}   # stop"
+echo "  launchctl bootout ${GUI_DOMAIN}/${LABEL}     # remove"
 echo "  tail -f $LOG_PATH"
-echo "────────────────────────────────────────────────────────"
+echo "────────────────────────────────────────────────────────" 

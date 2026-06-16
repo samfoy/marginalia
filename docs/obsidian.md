@@ -37,15 +37,15 @@ Each book gets its own markdown file. The first time a note is saved, marginalia
 
 ```markdown
 ---
-title: "The Expectant Father"
-author: "Jennifer Ash Rudick"
+title: "The Difference Engine"
+author: "Ada Lovelace"
 tags:
   - book
 ---
 
-# The Expectant Father
+# The Difference Engine
 
-**Author:** Jennifer Ash Rudick
+**Author:** Ada Lovelace
 
 ## Notes
 ```
@@ -90,7 +90,7 @@ The header `— Ask AI · <mode>` identifies the lookup type. The `**AI:**` labe
 Files are named `<Author> - <Title>.md` using the book metadata from KOReader (which comes from the EPUB's metadata tags). This may differ from what's in Calibre if the EPUB tags are stale.
 
 Example:
-- Author: `Jennifer Ash Rudick`, Title: `The Expectant Father` → `Jennifer Ash Rudick - The Expectant Father.md`
+- Author: `Ada Lovelace`, Title: `The Difference Engine` → `Ada Lovelace - The Difference Engine.md`
 
 If marginalia is creating files with wrong author names, check the EPUB metadata. The plugin reports the author exactly as KOReader reads it from the file — this can sometimes include full name variations, initials, or "First Last" vs "Last, First" formatting.
 
@@ -128,7 +128,7 @@ Restart the bridge after changing this.
 
 ## Tips
 
-**Link to the book note from your daily notes:** The file path is predictable — you can wikilink to it as `[[Jennifer Ash Rudick - The Expectant Father]]` from anywhere in your vault.
+**Link to the book note from your daily notes:** The file path is predictable — you can wikilink to it as `[[Ada Lovelace - The Difference Engine]]` from anywhere in your vault.
 
 **Frontmatter enrichment:** marginalia creates minimal frontmatter. You can enrich it with ratings, dates, tags, etc. — the note's frontmatter is yours to edit; marginalia only appends to the `## Notes` section.
 

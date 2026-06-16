@@ -36,9 +36,7 @@ marginalia looks for your Calibre library directory at `~/Calibre Library/` (the
 export MARGINALIA_CALIBRE_DB="/path/to/your/Calibre Library"
 ```
 
-Or edit `CALIBRE_LIB` in `bridge/book_finder.py`.
-
-To find your library path in Calibre: **Preferences → Miscellaneous → Open Calibre configuration directory** — the library is one level up.
+To find your library path in Calibre: the current library is shown in the **title bar**, or go to **Preferences → Miscellaneous → Show current library location**.
 
 ### 4. Verify
 

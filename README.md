@@ -64,6 +64,8 @@ marginalia serve
 ### Option B — Anthropic
 
 ```bash
+git clone https://github.com/samfoy/marginalia
+cd marginalia
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[anthropic,embed]"
 
@@ -77,6 +79,8 @@ marginalia serve
 ### Option C — AWS Bedrock
 
 ```bash
+git clone https://github.com/samfoy/marginalia
+cd marginalia
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[bedrock]"
 
@@ -186,6 +190,8 @@ The fallback chain is derived automatically from the primary model's provider �
 | `MARGINALIA_EMBED_MODEL` | `cohere.embed-english-v3` | Model ID for OpenAI/Bedrock embedding |
 | `MARGINALIA_RAG_CHUNK_CHARS` | `1600` | Characters per chunk |
 | `MARGINALIA_XRAY_MAX_TOKENS` | `16384` | Max tokens for Book Index generation |
+| `MARGINALIA_CHUNK_MODEL_ID` | *(same as MODEL_ID)* | Model for chunked large-book processing |
+| `MARGINALIA_MAX_PARALLEL_CHUNKS` | `4` | Concurrent chunks for large books |
 
 Auto-detection order: OpenAI key present → `openai`; sentence-transformers installed → `local`; else → `bedrock`.
 

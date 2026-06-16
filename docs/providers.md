@@ -111,7 +111,7 @@ bedrock-mantle (`bedrock-mantle.us-east-2.api.aws`) gives access to GPT models u
 
 ```bash
 export MARGINALIA_AWS_PROFILE=your-profile
-export MARGINALIA_MODEL_ID=openai.gpt-5.5
+export MARGINALIA_MODEL_ID=openai.gpt-5.5  # bedrock-mantle; requires allowlisted AWS account
 ```
 
 ### IAM setup
@@ -179,7 +179,7 @@ export MARGINALIA_LOCAL_EMBED_MODEL=all-mpnet-base-v2  # ~420MB, higher quality
 |---|---|
 | `MARGINALIA_OPENAI_API_KEY` | OpenAI API key (also checks `OPENAI_API_KEY`) |
 | `MARGINALIA_ANTHROPIC_API_KEY` | Anthropic API key (also checks `ANTHROPIC_API_KEY`) |
-| `MARGINALIA_MODEL_ID` | Primary model (default: `openai.gpt-5.5`) |
+| `MARGINALIA_MODEL_ID` | Primary model (default: `openai:gpt-4o`) |
 | `MARGINALIA_FALLBACK_MODEL_ID` | Terminal fallback (default: `us.anthropic.claude-sonnet-4-6`) |
 | `MARGINALIA_MODEL_CHAIN` | Explicit chain, overrides auto-derivation |
 | `MARGINALIA_MODEL_COOLDOWN_S` | Circuit breaker window in seconds (default: 120) |
