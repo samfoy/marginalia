@@ -222,4 +222,123 @@ function Async.post(url, body_table, on_done, on_error, opts)
     end
 end
 
+--- Upload a local file as raw binary (for EPUB upload to the bridge).
+-- headers_table: extra HTTP headers (e.g. X-Book-Title, Content-Type).
+-- on_done(resp_table) — parsed JSON response.
+-- on_error(err_string).
+-- Returns cancel().
+function Async.postFile(url, file_path, headers_table, on_done, on_error)
+    local function child_fn(pid, child_write_fd)
+        local ok, err = pcall(function()
+            local su_ok, socketutil = pcall(require, "socketutil")
+            if su_ok and socketutil then
+                socketutil:set_timeout(60, 300)
+            end
+
+            local f = io.open(file_path, "rb")
+            if not f then
+                ffiutil.writeToFD(child_write_fd, ERR_MARKER .. "cannot open file: " .. file_path)
+                return
+            end
+            f:seek("end")
+            local size = f:seek()
+            f:seek("set", 0)
+
+            local hdrs = {
+                ["Content-Length"] = tostring(size),
+                ["Content-Type"]   = "application/epub+zip",
+            }
+            for k, v in pairs(headers_table) do hdrs[k] = v end
+
+            local pipe_sink = wrap_fd(child_write_fd)
+            local ok2, code = http.request({
+                url     = url,
+                method  = "POST",
+                headers = hdrs,
+                source  = ltn12.source.file(f),
+                sink    = ltn12.sink.file(pipe_sink),
+            })
+
+            if not ok2 then
+                ffiutil.writeToFD(child_write_fd, ERR_MARKER .. "network: " .. tostring(code))
+            elseif code ~= 200 and code ~= 202 then
+                ffiutil.writeToFD(child_write_fd, ERR_MARKER .. "HTTP " .. tostring(code))
+            end
+        end)
+        if not ok then
+            ffiutil.writeToFD(child_write_fd, ERR_MARKER .. tostring(err))
+        end
+    end
+
+    local pid, parent_read_fd = ffiutil.runInSubProcess(child_fn, true)
+    if not pid then
+        on_error("fork unavailable for file upload")
+        return function() end
+    end
+
+    local cancelled = false
+    local completed = false
+    local chunks    = {}
+    local deadline  = os.time() + 310   -- 5 min for large EPUBs on slow links
+
+    local function cleanup()
+        if pid then
+            UIManager:scheduleIn(1, function()
+                if ffiutil.isSubProcessDone(pid) then
+                    if parent_read_fd then pcall(ffiutil.readAllFromFD, parent_read_fd) end
+                else
+                    UIManager:scheduleIn(3, function()
+                        if parent_read_fd then pcall(ffiutil.readAllFromFD, parent_read_fd) end
+                        if pid then pcall(ffiutil.terminateSubProcess, pid) end
+                    end)
+                end
+            end)
+        end
+    end
+
+    local function finish(resp, err)
+        if completed then return end
+        completed = true
+        cleanup()
+        if err then on_error(err)
+        else on_done(resp) end
+    end
+
+    local function poll()
+        if cancelled then cleanup(); return end
+        local got = false
+        while true do
+            local size = ffiutil.getNonBlockingReadSize(parent_read_fd)
+            if not size or size <= 0 then break end
+            local part = ffiutil.readAllFromFD(parent_read_fd)
+            if part and #part > 0 then chunks[#chunks + 1] = part; got = true
+            else break end
+        end
+
+        if ffiutil.isSubProcessDone(pid) then
+            while true do
+                local size = ffiutil.getNonBlockingReadSize(parent_read_fd)
+                if not size or size <= 0 then break end
+                local part = ffiutil.readAllFromFD(parent_read_fd)
+                if part and #part > 0 then chunks[#chunks + 1] = part else break end
+            end
+            local raw = table.concat(chunks)
+            local mpos = raw:find(ERR_MARKER, 1, true)
+            if mpos then finish(nil, raw:sub(mpos + #ERR_MARKER)); return end
+            if raw == "" then finish(nil, "empty response"); return end
+            local resp, derr = rapidjson.decode(raw)
+            if not resp then finish(nil, "decode: " .. (derr or raw:sub(1, 80)))
+            elseif type(resp.error) == "string" and resp.error ~= "" then finish(nil, resp.error)
+            else finish(resp, nil) end
+            return
+        end
+
+        if os.time() > deadline then finish(nil, "upload timeout"); return end
+        UIManager:scheduleIn(got and 0.5 or POLL_INTERVAL, poll)
+    end
+
+    UIManager:scheduleIn(POLL_INTERVAL, poll)
+    return function() cancelled = true; if pid then pcall(ffiutil.terminateSubProcess, pid) end end
+end
+
 return Async

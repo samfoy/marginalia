@@ -174,6 +174,28 @@ function Bridge:xrayInitAsync(params, on_done, on_error)
     return Async.post(self:url("/book-index/init"), params, on_done, on_error, { raw = true })
 end
 
+--- Stream the device's open EPUB to the bridge for Book Index generation.
+-- Used when /book-index/init returns {status="needs_epub"}.
+-- params: {epub_path, book_title, book_author, reading_pct}
+-- on_done(resp_table {status, job_id, poll_url}) / on_error(err)
+function Bridge:xrayUploadAsync(params, on_done, on_error)
+    local headers = {
+        ["X-Book-Title"]  = params.book_title  or "",
+        ["X-Book-Author"] = params.book_author or "",
+        ["X-Reading-Pct"] = tostring(params.reading_pct or 0),
+    }
+    if self.token and self.token ~= "" then
+        headers["X-Marginalia-Token"] = self.token
+    end
+    return Async.postFile(
+        self:url("/book-index/upload-epub"),
+        params.epub_path,
+        headers,
+        on_done,
+        on_error
+    )
+end
+
 --- Poll an in-progress X-Ray generation job.
 -- Tight timeouts (3s) keep this synchronous GET well under the 5s ANR
 -- threshold on flaky networks; pollXRayStatus retries on timeout.

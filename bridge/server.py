@@ -13,6 +13,7 @@ Routes:
   POST /section                    chapter-by-chapter analysis
   POST /note                       save highlighted passage + context to Obsidian vault
   POST /note-new                    create a standalone Obsidian note from a chat response
+  POST /book-index/upload-epub      receive EPUB from device, generate Book Index
   POST /book-index/init            find book in Calibre, generate Book Index, cache it
   POST /book-index/progress        update reading position for a cached book
 
@@ -40,6 +41,7 @@ Config via environment variables (all optional):
   MARGINALIA_ANTHROPIC_API_KEY Anthropic API key for direct Anthropic    (default: "")
 """
 
+import hashlib
 import io
 import json
 import logging
@@ -51,6 +53,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 
@@ -87,6 +90,7 @@ BOOKS_DIR  = _books_raw if os.path.isabs(_books_raw) else os.path.join(VAULT_ROO
 _default_captures = os.path.join(VAULT_ROOT, "Notes", "Captures")
 _captures_raw = os.path.expanduser(os.environ.get("MARGINALIA_CAPTURES_DIR", _default_captures))
 CAPTURES_DIR = _captures_raw if os.path.isabs(_captures_raw) else os.path.join(VAULT_ROOT, _captures_raw)
+UPLOADS_DIR  = Path.home() / ".marginalia" / "uploads"
 # Reasoning effort for interactive companion calls.
 COMPANION_EFFORT = os.environ.get("MARGINALIA_COMPANION_EFFORT", "low")
 
@@ -409,6 +413,69 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
         update("failed", error=str(exc))
 
 
+def _run_xray_job_from_epub(job_id: str, epub_path: str, title: str, author: str, reading_pct: float) -> None:
+    """Background thread: generate Book Index from a device-uploaded EPUB.
+    Skips the Calibre lookup — epub_path is already local. Cleans up the
+    uploaded file on completion (success or failure).
+    """
+    def update(status: str, **kw):
+        with _jobs_lock:
+            _xray_jobs[job_id].update({"status": status, **kw})
+
+    try:
+        update("extracting", progress="Extracting EPUB text")
+        content = extract_epub(epub_path)
+
+        # Use provided title/author as fallback if EPUB metadata is empty
+        if not content.title:
+            content.title = title
+        if not content.author:
+            content.author = author
+
+        update("generating", progress=f"Generating Book Index ({content.total_chars:,} chars)")
+
+        # Try series info from Calibre metadata.db by title (no calibre_id available)
+        sv = series.resolve(title=content.title, author=content.author)
+        if sv:
+            content.series = sv["series"]
+            content.series_index = sv["series_index"]
+            logging.info("series: resolved '%s' #%s for %s",
+                         sv["series"], sv["series_index"], content.title)
+
+        xray, strategy = generate(content)
+
+        try:
+            mention_idx = mentions.build_mentions(content, xray)
+            mentions.add_mention_counts(xray, mention_idx)
+        except Exception:
+            logging.exception("mentions build failed (non-fatal)")
+            mention_idx = {}
+
+        book_meta = {"epub_path": epub_path, "calibre_id": None}
+        record = build_record(content, book_meta, xray, strategy)
+        record["mentions"] = mention_idx
+        if reading_pct:
+            record["last_reading_pct"] = reading_pct
+        xray_cache.save(content.file_hash, record)
+
+        try:
+            rag.build_index(content, content.file_hash)
+        except Exception:
+            logging.exception("rag index build failed (non-fatal)")
+
+        update("ready", record=record, error=None)
+        logging.info("Book Index job %s complete (device epub): %s", job_id, title)
+
+    except Exception as exc:
+        logging.exception("Book Index job %s failed (device epub)", job_id)
+        update("failed", error=str(exc))
+    finally:
+        try:
+            os.unlink(epub_path)
+        except OSError:
+            pass
+
+
 def _run_knowledge_xray_job(job_id: str, title: str, author: str) -> None:
     """
     Background thread: generate Book Index from model knowledge (no EPUB).
@@ -567,6 +634,9 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch_post(self):
         if self.path == "/book-index/init":
             self._handle_xray_init()
+            return
+        if self.path == "/book-index/upload-epub":
+            self._handle_epub_upload()
             return
         if self.path == "/book-index/progress":
             self._handle_xray_progress()
@@ -877,7 +947,17 @@ class Handler(BaseHTTPRequestHandler):
                                    "generated_at": mac_generated_at})
             return
 
-        # ── Start background generation job ─────────────────────────────────
+        # ── Not cached — check Calibre synchronously before deciding what to do ──
+        book_meta = find_epub(title, author)
+        if not book_meta and author:
+            book_meta = find_epub(title, "")
+        if not book_meta:
+            # No EPUB in Calibre — ask the device to send it
+            logging.info("Book Index: no Calibre match for %r, requesting device epub", title)
+            self._send_json(200, {"status": "needs_epub"})
+            return
+
+        # Calibre has it — spawn normal background job
         job_id = str(uuid.uuid4())[:8]
         with _jobs_lock:
             _xray_jobs[job_id] = {"status": "pending", "progress": "Starting",
@@ -1028,6 +1108,43 @@ class Handler(BaseHTTPRequestHandler):
             logging.exception("/note-new error")
             self._send_json(500, {"ok": False, "error": str(exc)})
 
+
+    # ── /book-index/upload-epub — receive EPUB from device, generate Book Index ──
+    def _handle_epub_upload(self):
+        title       = self.headers.get("X-Book-Title", "").strip()
+        author      = self.headers.get("X-Book-Author", "").strip()
+        reading_pct = float(self.headers.get("X-Reading-Pct") or 0)
+        length      = int(self.headers.get("Content-Length") or 0)
+
+        if not title:
+            self.send_error(400, "Missing X-Book-Title header"); return
+        if length <= 0:
+            self.send_error(400, "Empty body"); return
+        if length > 100 * 1024 * 1024:
+            self.send_error(413, "EPUB too large (100 MB limit)"); return
+
+        data = self.rfile.read(length)
+        epub_hash = hashlib.md5(data).hexdigest()
+
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        epub_path = str(UPLOADS_DIR / f"{epub_hash}.epub")
+        with open(epub_path, "wb") as f:
+            f.write(data)
+        logging.info("epub upload: %s bytes → %s (title=%r)", length, epub_path, title)
+
+        job_id = str(uuid.uuid4())[:8]
+        with _jobs_lock:
+            _xray_jobs[job_id] = {"status": "pending", "progress": "Starting",
+                                   "record": None, "error": None}
+        t = threading.Thread(
+            target=_run_xray_job_from_epub,
+            args=(job_id, epub_path, title, author, reading_pct),
+            daemon=True,
+        )
+        t.start()
+        logging.info("Book Index job %s started (device epub) for %r", job_id, title)
+        self._send_json(202, {"status": "generating", "job_id": job_id,
+                              "poll_url": f"/book-index/status/{job_id}"})
 
     # ── /xray/progress ────────────────────────────────────────────────────────
     def _handle_xray_progress(self):

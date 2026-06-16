@@ -223,3 +223,109 @@ class TestChatRoute:
 def test_unknown_route_returns_404(live_server):
     code, _ = _get(live_server["port"], "/no-such-endpoint")
     assert code == 404
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POST /book-index/init  — needs_epub + upload
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestXRayEpubUpload:
+
+    def test_init_returns_needs_epub_when_calibre_misses(self, live_server, monkeypatch):
+        """When Calibre has no match, /book-index/init returns needs_epub."""
+        import book_finder
+        monkeypatch.setattr(book_finder, "find_epub", lambda *a, **kw: None)
+        # Also patch xray_cache so there's no stale cached hit
+        import xray_cache as xc
+        monkeypatch.setattr(xc, "find_by_title_author", lambda *a, **kw: None)
+
+        code, body = _post(live_server["port"], "/book-index/init", {
+            "book_title": "A Book Not In Calibre XYZ123",
+            "book_author": "Nobody",
+            "reading_pct": 50,
+        })
+        assert code == 200
+        assert body.get("status") == "needs_epub"
+
+    def test_upload_epub_starts_job(self, live_server, tmp_path, minimal_epub_bytes, monkeypatch):
+        """Uploading a valid EPUB returns 202 with a job_id."""
+        import server as srv
+
+        started = []
+        real_thread_start = __import__("threading").Thread.start
+
+        def fake_run(job_id, epub_path, title, author, reading_pct):
+            started.append(job_id)
+            # Don't actually generate — just mark ready immediately
+            with srv._jobs_lock:
+                srv._xray_jobs[job_id]["status"] = "ready"
+            try:
+                import os; os.unlink(epub_path)
+            except OSError:
+                pass
+
+        monkeypatch.setattr(srv, "_run_xray_job_from_epub", fake_run)
+
+        url = f"http://127.0.0.1:{live_server['port']}/book-index/upload-epub"
+        req = urllib.request.Request(
+            url,
+            data=minimal_epub_bytes,
+            headers={
+                "Content-Type":   "application/epub+zip",
+                "Content-Length": str(len(minimal_epub_bytes)),
+                "X-Book-Title":   "Test Book",
+                "X-Book-Author":  "Test Author",
+                "X-Reading-Pct":  "42",
+            },
+            method="POST",
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=5)
+            code = resp.getcode()
+            body = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            code = e.code
+            body = {}
+
+        assert code == 202
+        assert "job_id" in body
+        assert body.get("status") == "generating"
+        assert body.get("poll_url", "").startswith("/book-index/status/")
+
+    def test_upload_epub_missing_title_returns_400(self, live_server, minimal_epub_bytes):
+        """Upload without X-Book-Title header → 400."""
+        url = f"http://127.0.0.1:{live_server['port']}/book-index/upload-epub"
+        req = urllib.request.Request(
+            url,
+            data=minimal_epub_bytes,
+            headers={
+                "Content-Type":   "application/epub+zip",
+                "Content-Length": str(len(minimal_epub_bytes)),
+                # deliberately no X-Book-Title
+            },
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            assert False, "expected 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+    def test_upload_epub_empty_body_returns_400(self, live_server):
+        """Upload with Content-Length: 0 → 400."""
+        url = f"http://127.0.0.1:{live_server['port']}/book-index/upload-epub"
+        req = urllib.request.Request(
+            url,
+            data=b"",
+            headers={
+                "Content-Type":    "application/epub+zip",
+                "Content-Length":  "0",
+                "X-Book-Title":    "Some Book",
+            },
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            assert False, "expected 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400

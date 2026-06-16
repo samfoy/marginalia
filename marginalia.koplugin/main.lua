@@ -359,6 +359,39 @@ function PiRead:requestXRay(title, author, reading_pct)
                 text    = _("Building Book Index…"),
                 timeout = 4,
             })
+        elseif resp.status == "needs_epub" then
+            local epub_path = self.ui.document and self.ui.document.file
+            if not (epub_path and epub_path:match("%.epub$")) then
+                logger.warn("marginalia: needs_epub but no epub path available")
+                return
+            end
+            logger.info("marginalia: uploading epub to bridge:", epub_path)
+            UIManager:show(InfoMessage:new{
+                text    = _("Sending book to bridge…"),
+                timeout = 5,
+            })
+            Bridge:xrayUploadAsync({
+                epub_path   = epub_path,
+                book_title  = title,
+                book_author = author,
+                reading_pct = reading_pct or 0,
+            }, function(upload_resp)
+                if upload_resp and upload_resp.job_id then
+                    logger.info("marginalia: epub uploaded, job_id=%s", tostring(upload_resp.job_id))
+                    self._xray_job_id = upload_resp.job_id
+                    self:schedulePoll()
+                    UIManager:show(InfoMessage:new{
+                        text    = _("Building Book Index…"),
+                        timeout = 4,
+                    })
+                end
+            end, function(err)
+                logger.warn("marginalia: epub upload failed:", err)
+                UIManager:show(InfoMessage:new{
+                    text    = T(_("Book Index upload failed: %1"), err),
+                    timeout = 6,
+                })
+            end)
         end
     end, function(err)
         logger.warn("marginalia: /book-index/init error:", err)
