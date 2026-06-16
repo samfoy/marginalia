@@ -220,7 +220,7 @@ def _save_vault_note(
     if query and query.strip() and query.strip() != (highlight or "").strip():
         lines += [""] + _block("**Asked:** ", query)
     if response and response.strip():
-        lines += [""] + _block("**Pi:** ", response)
+        lines += [""] + _block("**AI:** ", response)
     bullet = "\n".join(lines)
 
     # Read or create

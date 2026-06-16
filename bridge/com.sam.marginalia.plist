@@ -20,6 +20,8 @@
         <string>us-west-2</string>
         <key>MARGINALIA_MODEL_ID</key>
         <string>openai.gpt-5.5</string>
+        <key>MARGINALIA_VAULT</key>
+        <string>/Users/sam.painter/Documents/Sam</string>
         <key>MARGINALIA_PORT</key>
         <string>7731</string>
         <!-- Set MARGINALIA_TOKEN here if you want a shared secret -->
