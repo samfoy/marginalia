@@ -1,0 +1,53 @@
+[Unit]
+Description=marginalia bridge — KOReader AI reading companion
+Documentation=https://github.com/samfoy/marginalia
+After=network.target
+
+[Service]
+Type=simple
+
+# Update ExecStart to point at your actual install location.
+# Using %h expands to $HOME automatically.
+ExecStart=/usr/bin/python3 %h/marginalia/bridge/server.py
+WorkingDirectory=%h/marginalia/bridge
+
+# Option A: inline env vars
+Environment=MARGINALIA_MODEL_ID=openai:gpt-4o
+# Environment=MARGINALIA_OPENAI_API_KEY=sk-...
+# Environment=MARGINALIA_ANTHROPIC_API_KEY=sk-ant-...
+Environment=MARGINALIA_VAULT=%h/Documents/YourVault
+# Environment=MARGINALIA_CALIBRE_DB=%h/Calibre Library
+Environment=MARGINALIA_PORT=7731
+
+# Option B: load from a file instead (uncomment and remove the inline vars above)
+# EnvironmentFile=%h/.marginalia.env
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+
+# ── Installation ────────────────────────────────────────────────────────────
+#
+# 1. Edit ExecStart and Environment above for your setup.
+#
+# 2. Install as a systemd user service (no root needed):
+#      mkdir -p ~/.config/systemd/user
+#      cp marginalia.service ~/.config/systemd/user/
+#      systemctl --user daemon-reload
+#      systemctl --user enable --now marginalia
+#
+# 3. Verify:
+#      systemctl --user status marginalia
+#      curl http://localhost:7731/ping   # → pong
+#
+# 4. Logs:
+#      journalctl --user -u marginalia -f
+#
+# 5. Manage:
+#      systemctl --user stop marginalia
+#      systemctl --user start marginalia
+#      systemctl --user restart marginalia

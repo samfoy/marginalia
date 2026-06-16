@@ -1,5 +1,5 @@
 """
-book_finder.py — Locate EPUBs in ~/CalibreLibrary by title and author.
+book_finder.py — Locate EPUBs in the Calibre library by title and author.
 
 Directory structure: Author Name/Title (calibre_id)/Title - Author Name.epub
 Also reads metadata.opf for series info (more reliable than the EPUB-internal OPF).
@@ -13,7 +13,9 @@ from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
-CALIBRE_LIB = Path(os.path.expanduser("~/CalibreLibrary"))
+CALIBRE_LIB = Path(os.path.expanduser(
+    os.environ.get("MARGINALIA_CALIBRE_DB", "~/Calibre Library")
+))
 
 # Articles to strip when normalizing titles
 _ARTICLES = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)

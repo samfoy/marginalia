@@ -21,6 +21,7 @@ Config via environment variables (all optional):
   MARGINALIA_MODEL_ID     Model for /ask queries           (default: gpt-4o)
   MARGINALIA_TOKEN        Shared secret (empty = no auth)  (default: "")
   MARGINALIA_MAX_TOKENS   Max tokens for /ask responses    (default: 600)
+  MARGINALIA_CALIBRE_DB   Path to Calibre library dir      (default: ~/Calibre Library)
   MARGINALIA_VAULT        Obsidian vault root              (default: ~/Documents)
   MARGINALIA_OPENAI_API_KEY    OpenAI API key for direct OpenAI models   (default: "")
   MARGINALIA_ANTHROPIC_API_KEY Anthropic API key for direct Anthropic    (default: "")
