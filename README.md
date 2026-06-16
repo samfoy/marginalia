@@ -47,17 +47,18 @@ marginalia runs a small bridge server on your computer that your KOReader device
 
 ## Quick start
 
-### Option A — Setup wizard (recommended)
+### Option A — Install script (recommended)
 
 ```bash
-git clone https://github.com/samfoy/marginalia
-cd marginalia
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[openai,embed]"   # or [anthropic,embed] or [bedrock]
-marginalia setup
+curl -sSL https://raw.githubusercontent.com/samfoy/marginalia/main/install.sh | bash
 ```
 
-The wizard picks your provider, validates the API key, finds your Obsidian vault, and installs the background service — then prints the exact host/port to paste into KOReader.
+Installs to `~/.marginalia`, creates a venv, and launches the setup wizard. Provider options:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/samfoy/marginalia/main/install.sh | MARGINALIA_PROVIDER=anthropic bash
+curl -sSL https://raw.githubusercontent.com/samfoy/marginalia/main/install.sh | MARGINALIA_PROVIDER=bedrock bash
+```
 
 ### Option B — Docker
 

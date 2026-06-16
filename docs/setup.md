@@ -2,18 +2,30 @@
 
 ## The fast path
 
-Four commands. Bridge running, plugin installed, ready to read.
-
 ```bash
-git clone https://github.com/samfoy/marginalia
-cd marginalia
-pip install -e ".[openai,embed]"   # or [anthropic,embed] or [bedrock]
-marginalia setup
+curl -sSL https://raw.githubusercontent.com/samfoy/marginalia/main/install.sh | bash
 ```
 
-The wizard validates your API key, finds your Obsidian vault, installs a background service (LaunchAgent on macOS, systemd on Linux), and prints the exact host/port to paste into the KOReader plugin.
+That's it. The script clones the repo to `~/.marginalia`, creates a venv, installs dependencies, and launches the setup wizard — which validates your API key, finds your Obsidian vault, and installs the background service.
 
 Once setup finishes, **jump to [Install the KOReader plugin](#install-the-koreader-plugin)**.
+
+**Provider options** (default is OpenAI):
+
+```bash
+# Anthropic
+curl -sSL https://raw.githubusercontent.com/samfoy/marginalia/main/install.sh | MARGINALIA_PROVIDER=anthropic bash
+# AWS Bedrock
+curl -sSL https://raw.githubusercontent.com/samfoy/marginalia/main/install.sh | MARGINALIA_PROVIDER=bedrock bash
+```
+
+**Custom install location** (default: `~/.marginalia`):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/samfoy/marginalia/main/install.sh | MARGINALIA_DIR=~/tools/marginalia bash
+```
+
+Running the script again updates an existing install.
 
 ---
 
