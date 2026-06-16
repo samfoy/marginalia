@@ -10,7 +10,7 @@ AI reading companion for KOReader — Book Index, position-bounded RAG, highligh
 
 ## What it does
 
-marginalia runs a small bridge server on your Mac that your KOReader device talks to over your local network (or Tailscale). When you open a book, it:
+marginalia runs a small bridge server on your computer that your KOReader device talks to over your local network (or Tailscale). When you open a book, it:
 
 1. **Generates a Book Index** — characters, locations, terms, literary/mythological references, and a chapter-positioned timeline, extracted from the full EPUB text via your LLM of choice. Cached locally. Falls back to model knowledge if the EPUB isn't in Calibre.
 2. **Builds a RAG index** — chunks the book text, embeds it, and stores a position-aware retrieval index so every AI answer is grounded in passages *you've already read*. No spoilers by construction.
@@ -37,7 +37,7 @@ marginalia runs a small bridge server on your Mac that your KOReader device talk
 
 ## Requirements
 
-- **Mac** (macOS 12+) — the bridge runs here
+- **macOS, Linux, or Windows** — wherever the bridge runs
 - **Python 3.11+**
 - **KOReader** on an Android/Boox device, Kindle, or any device that runs it
 - **Calibre** (optional but recommended — without it, Book Index uses model knowledge only)
@@ -105,7 +105,7 @@ Top menu → Tools (wrench icon) → **marginalia**
 
 | Setting | Value |
 |---|---|
-| Host | Your Mac's IP or hostname. Same LAN: `macbook.local`. Tailscale: your Tailscale IP. |
+| Host | Your computer's IP or hostname. Same LAN: e.g. `192.168.1.42` or `mycomputer.local`. Tailscale: your Tailscale IP. |
 | Port | `7731` |
 | Token | Leave empty, or set the same value as `MARGINALIA_TOKEN` |
 | Spoiler-free | On (default) — hides entities/events past your reading position |
