@@ -100,7 +100,7 @@ If marginalia is creating files with wrong author names, check the EPUB metadata
 
 Notes are queued locally on the KOReader device first, then synced to the bridge when connected. This means:
 
-- Notes are never lost to a spotty connection — they persist in `/sdcard/koreader/settings/marginalia/note_queue.json`
+- Notes are never lost to a spotty connection — they persist on-device (Android/Boox: `/sdcard/koreader/settings/marginalia/note_queue.json`; Kindle: `/mnt/us/koreader/settings/marginalia/note_queue.json`)
 - The queue flushes automatically when you open a book (if the bridge is reachable)
 - "Saved — will sync to vault when online" means the note is queued but the bridge wasn't reachable
 

@@ -69,7 +69,9 @@ TOKEN      = os.environ.get("MARGINALIA_TOKEN", "")
 MAX_TOKENS = int(os.environ.get("MARGINALIA_MAX_TOKENS", 600))
 VAULT_ROOT = os.path.expanduser(os.environ.get("MARGINALIA_VAULT", "~/Documents"))
 _default_books = os.path.join(VAULT_ROOT, "Notes", "Books")
-BOOKS_DIR  = os.path.expanduser(os.environ.get("MARGINALIA_BOOKS_DIR", _default_books))
+_books_raw = os.path.expanduser(os.environ.get("MARGINALIA_BOOKS_DIR", _default_books))
+# Resolve relative paths against VAULT_ROOT so Notes/Books works as documented
+BOOKS_DIR  = _books_raw if os.path.isabs(_books_raw) else os.path.join(VAULT_ROOT, _books_raw)
 # Reasoning effort for interactive companion calls.
 COMPANION_EFFORT = os.environ.get("MARGINALIA_COMPANION_EFFORT", "low")
 

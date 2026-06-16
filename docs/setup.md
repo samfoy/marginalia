@@ -58,7 +58,7 @@ Copy the example env file and fill it in:
 
 ```bash
 cp .env.example .env
-$EDITOR .env   # uncomment your provider block and set MARGINALIA_VAULT
+${EDITOR:-nano} .env   # uncomment your provider block (nano is available on most systems) and set MARGINALIA_VAULT
 ```
 
 Minimum required settings:
@@ -73,6 +73,10 @@ export MARGINALIA_MODEL_ID=openai:gpt-4o
 # Anthropic:
 # export MARGINALIA_ANTHROPIC_API_KEY=sk-ant-...
 # export MARGINALIA_MODEL_ID=anthropic:claude-opus-4-5
+
+# AWS Bedrock:
+# export MARGINALIA_AWS_PROFILE=your-aws-profile
+# export MARGINALIA_MODEL_ID=us.anthropic.claude-sonnet-4-6
 
 # Your Obsidian vault:
 export MARGINALIA_VAULT=~/Documents/YourVault
