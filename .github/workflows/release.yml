@@ -25,18 +25,18 @@ jobs:
       - name: Stamp version into _meta.lua
         run: |
           sed -i "s/version     = \"[^\"]*\"/version     = \"${{ steps.version.outputs.VERSION }}\"/" \
-            piread.koplugin/_meta.lua
+            marginalia.koplugin/_meta.lua
 
       - name: Build plugin zip
         run: |
-          zip -r piread.koplugin.zip piread.koplugin \
+          zip -r marginalia.koplugin.zip marginalia.koplugin \
             -x "*.git*" "*/.*" "*/__pycache__/*" "*.pyc"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: piread.koplugin.zip
+          files: marginalia.koplugin.zip
           draft: false
           prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
           generate_release_notes: true

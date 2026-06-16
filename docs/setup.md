@@ -52,13 +52,37 @@ The bridge runs fine on Windows — only the auto-start instructions differ (see
 
 ---
 
-## Step 2 — Configure
+## Step 2 — Configure and start the service
+
+### Recommended: setup wizard
+
+```bash
+marginalia setup
+```
+
+The wizard walks through:
+
+1. **AI provider** — pick OpenAI, Anthropic, or AWS Bedrock; enter your API key; the wizard validates it before continuing
+2. **Obsidian vault** — auto-detects vaults on your machine; pick one or enter a path manually; also asks for the note folders:
+   - **Book notes folder** (default: `Notes/Books`) — where per-book highlight/AI notes are saved
+   - **Standalone captures folder** (default: `Notes/Captures`) — where standalone notes created via "Save as Note" land
+3. **Background service** — installs a macOS LaunchAgent (or Linux systemd unit) so the bridge starts automatically at login
+4. **KOReader instructions** — prints the exact host/port to paste into the plugin
+
+Config is written to `~/.marginalia.env` and loaded automatically by `marginalia serve`.
+
+Run `marginalia setup` again at any time to change settings — it loads the existing config so you can update just what you need.
+
+### Alternative: manual configuration
+
+<details>
+<summary>Configure by hand (advanced users, Docker, CI)</summary>
 
 Copy the example env file and fill it in:
 
 ```bash
 cp .env.example .env
-${EDITOR:-nano} .env   # uncomment your provider block (nano is available on most systems) and set MARGINALIA_VAULT
+${EDITOR:-nano} .env
 ```
 
 Minimum required settings:
@@ -80,12 +104,15 @@ export MARGINALIA_MODEL_ID=openai:gpt-4o
 
 # Your Obsidian vault:
 export MARGINALIA_VAULT=~/Documents/YourVault
+# Optional: customise note folder locations (paths relative to vault, or absolute)
+# export MARGINALIA_BOOKS_DIR=Notes/Books
+# export MARGINALIA_CAPTURES_DIR=Notes/Captures
 ```
 
 Then load it:
 
 ```bash
-# macOS / Linux — use set -a so vars are exported to child processes:
+# macOS / Linux:
 set -a && source .env && set +a
 
 # Windows (PowerShell):
@@ -94,19 +121,23 @@ Get-Content .env | Where-Object { $_ -match '^(export\s+)?[A-Z_]+=' } | ForEach-
 
 > **Note:** This only applies to the current terminal session. For permanent configuration use the LaunchAgent (`install.sh`) or systemd unit — they bake env vars into the service definition.
 
+</details>
+
 ---
 
 ## Step 3 — Start the bridge
 
-```bash
-marginalia serve
-# marginalia listening on :7731  model=openai:gpt-4o
-```
-
-Verify:
+If you ran the wizard and installed the background service, it’s already running. Verify:
 
 ```bash
 curl http://localhost:7731/ping   # → pong
+```
+
+To start manually (useful for testing or if you skipped the service install):
+
+```bash
+marginalia serve
+# marginalia listening on :7731  model=openai:gpt-4o
 ```
 
 ---
@@ -205,6 +236,14 @@ Open any EPUB in KOReader. marginalia silently requests a Book Index in the back
 ## Running as a service
 
 ### macOS — LaunchAgent (starts at login)
+
+The easiest way is via the setup wizard — it installs and starts the service automatically:
+
+```bash
+marginalia setup
+```
+
+Or run the install script directly:
 
 ```bash
 cd bridge

@@ -25,7 +25,9 @@ marginalia runs a small bridge server on your Mac that your KOReader device talk
 - **Series intelligence** — cross-book context includes prior books you've finished; future books are excluded
 
 **Capture:**
-- Ask AI and AI: Save Note both create a saved highlight in KOReader (with the AI answer or your context as the highlight note) and append the passage + answer to the book's Obsidian note.
+- **Ask AI** lookups and **AI: Save Note** create a saved highlight in KOReader (with the AI answer or your context as the highlight note) and append the passage + answer to the book's Obsidian note (`Notes/Books/<Author> - <Title>.md`)
+- **Chat → To Book Note** appends the freeform Q&A (question + AI answer, no highlighted passage) to the book's Obsidian note
+- **Chat → Save as Note** creates a standalone note in `Notes/Captures/` with YAML frontmatter and a wikilink back to the book; a title dialog lets you name the note before saving
 
 **Ops:**
 - Live request monitor at `http://localhost:7731/monitor`
@@ -113,6 +115,14 @@ Top menu → Tools (wrench icon) → **marginalia**
 
 ## Running as a background service (macOS)
 
+The setup wizard handles this — it installs and starts the LaunchAgent at the end of Step 4:
+
+```bash
+marginalia setup
+```
+
+Or install the LaunchAgent directly:
+
 ```bash
 cd bridge
 ./install.sh   # detects Python, prompts for vault path, installs and starts the service
@@ -139,7 +149,8 @@ All settings via environment variables.
 |---|---|---|
 | `MARGINALIA_PORT` | `7731` | Bridge HTTP port |
 | `MARGINALIA_VAULT` | `~/Documents` | Obsidian vault root |
-| `MARGINALIA_BOOKS_DIR` | `<vault>/Notes/Books` | Where book note files are saved |
+| `MARGINALIA_BOOKS_DIR` | `<vault>/Notes/Books` | Where per-book note files are saved |
+| `MARGINALIA_CAPTURES_DIR` | `<vault>/Notes/Captures` | Where standalone notes (Save as Note) are saved |
 | `MARGINALIA_TOKEN` | *(empty)* | Shared secret (set same in plugin settings) |
 
 ### LLM providers
