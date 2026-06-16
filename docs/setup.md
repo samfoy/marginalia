@@ -1,194 +1,48 @@
 # First-Time Setup
 
-This guide walks you from zero to your first AI-powered Book Index in KOReader.
+## The fast path
 
-Estimated time: **10–15 minutes**.
+Four commands. Bridge running, plugin installed, ready to read.
+
+```bash
+git clone https://github.com/samfoy/marginalia
+cd marginalia
+pip install -e ".[openai,embed]"   # or [anthropic,embed] or [bedrock]
+marginalia setup
+```
+
+The wizard validates your API key, finds your Obsidian vault, installs a background service (LaunchAgent on macOS, systemd on Linux), and prints the exact host/port to paste into the KOReader plugin.
+
+Once setup finishes, **jump to [Install the KOReader plugin](#install-the-koreader-plugin)**.
 
 ---
 
-## What you need
+## Prerequisites
 
-- **Python 3.11+** on your desktop/laptop (macOS, Linux, or Windows)
+- **Python 3.11+** on your desktop/laptop
 - **KOReader** on your e-reader (Boox, Kindle, or any Android device)
-- **Network connectivity** between your e-reader and computer (see [Network setup](#network-setup) below)
+- Network connectivity between the e-reader and the computer running the bridge — see [Network setup](#network-setup)
 - An AI provider API key — [OpenAI](https://platform.openai.com/api-keys), [Anthropic](https://console.anthropic.com), or AWS Bedrock credentials (see [docs/providers.md](providers.md))
 - **Calibre** (optional but recommended — see [docs/calibre.md](calibre.md))
 
 ---
 
-## Step 1 — Clone and install
+## What the wizard configures
 
-```bash
-git clone https://github.com/samfoy/marginalia
-cd marginalia
-```
+Running `marginalia setup`:
 
-### macOS / Linux (create a virtual environment first)
-
-macOS Homebrew Python and most Linux distros enforce isolated installs. Use a venv:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate    # on Windows: .venv\Scripts\activate
-
-# then install your provider:
-pip install -e ".[openai,embed]"    # OpenAI + local embeddings
-pip install -e ".[anthropic,embed]" # Anthropic + local embeddings
-pip install -e ".[bedrock]"         # AWS Bedrock
-pip install -e ".[all]"             # everything
-```
-
-> **Tip:** To run `marginalia serve` ad-hoc, activate the venv in that terminal session first: `source .venv/bin/activate`. For always-on use, set up the LaunchAgent or systemd service instead — they use the venv’s Python directly without needing the venv active in your shell.
-
-### Windows
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[openai,embed]"
-```
-
-The bridge runs fine on Windows — only the auto-start instructions differ (see [Running as a service](#running-as-a-service)).
-
----
-
-## Step 2 — Configure and start the service
-
-### Recommended: setup wizard
-
-```bash
-marginalia setup
-```
-
-The wizard walks through:
-
-1. **AI provider** — pick OpenAI, Anthropic, or AWS Bedrock; enter your API key; the wizard validates it before continuing
-2. **Obsidian vault** — auto-detects vaults on your machine; pick one or enter a path manually; also asks for the note folders:
-   - **Book notes folder** (default: `Notes/Books`) — where per-book highlight/AI notes are saved
-   - **Standalone captures folder** (default: `Notes/Captures`) — where standalone notes created via "Save as Note" land
-3. **Background service** — installs a macOS LaunchAgent (or Linux systemd unit) so the bridge starts automatically at login
+1. **AI provider** — pick OpenAI, Anthropic, or AWS Bedrock; enter your API key; the wizard validates it live before continuing
+2. **Obsidian vault** — auto-detects vaults on your machine; pick one or enter a path manually; also asks for note folder locations:
+   - **Book notes folder** (default: `Notes/Books`) — per-book highlight/AI notes
+   - **Standalone captures folder** (default: `Notes/Captures`) — standalone notes from "Save as Note"
+3. **Background service** — installs and starts a macOS LaunchAgent or Linux systemd unit so the bridge runs automatically at login
 4. **KOReader instructions** — prints the exact host/port to paste into the plugin
 
-Config is written to `~/.marginalia.env` and loaded automatically by `marginalia serve`.
-
-Run `marginalia setup` again at any time to change settings — it loads the existing config so you can update just what you need.
-
-### Alternative: manual configuration
-
-<details>
-<summary>Configure by hand (advanced users, Docker, CI)</summary>
-
-Copy the example env file and fill it in:
-
-```bash
-cp .env.example .env
-${EDITOR:-nano} .env
-```
-
-Minimum required settings:
-
-```bash
-# .env — pick ONE provider block
-
-# OpenAI:
-export MARGINALIA_OPENAI_API_KEY=sk-...
-export MARGINALIA_MODEL_ID=openai:gpt-4o
-
-# Anthropic:
-# export MARGINALIA_ANTHROPIC_API_KEY=sk-ant-...
-# export MARGINALIA_MODEL_ID=anthropic:claude-opus-4-5
-
-# AWS Bedrock:
-# export MARGINALIA_AWS_PROFILE=your-aws-profile
-# export MARGINALIA_MODEL_ID=us.anthropic.claude-sonnet-4-6
-
-# Your Obsidian vault:
-export MARGINALIA_VAULT=~/Documents/YourVault
-# Optional: customise note folder locations (paths relative to vault, or absolute)
-# export MARGINALIA_BOOKS_DIR=Notes/Books
-# export MARGINALIA_CAPTURES_DIR=Notes/Captures
-```
-
-Then load it:
-
-```bash
-# macOS / Linux:
-set -a && source .env && set +a
-
-# Windows (PowerShell):
-Get-Content .env | Where-Object { $_ -match '^(export\s+)?[A-Z_]+=' } | ForEach-Object { $line = $_ -replace '^export\s+',''; $k,$v=$line.Split('=',2); $k=$k.Trim(); $v=$v.Trim().Trim('"').Trim("'"); [System.Environment]::SetEnvironmentVariable($k,$v,'Process') }
-```
-
-> **Note:** This only applies to the current terminal session. For permanent configuration use the LaunchAgent (`install.sh`) or systemd unit — they bake env vars into the service definition.
-
-</details>
+Config is saved to `~/.marginalia.env` and loaded automatically by `marginalia serve`. Run `marginalia setup` again at any time to update any setting.
 
 ---
 
-## Step 3 — Start the bridge
-
-If you ran the wizard and installed the background service, it’s already running. Verify:
-
-```bash
-curl http://localhost:7731/ping   # → pong
-```
-
-To start manually (useful for testing or if you skipped the service install):
-
-```bash
-marginalia serve
-# marginalia listening on :7731  model=openai:gpt-4o
-```
-
----
-
-## Network setup
-
-The bridge runs on your computer and the KOReader plugin connects to it over the network. You need to know the IP address or hostname of your computer that the e-reader can reach.
-
-### Same Wi-Fi network (most common)
-
-Find your computer's LAN IP:
-
-```bash
-# macOS
-ipconfig getifaddr en0         # Wi-Fi
-ipconfig getifaddr en1         # Ethernet
-
-# Linux
-ip addr show | grep "inet " | grep -v 127.0.0.1
-
-# Windows (PowerShell)
-(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notmatch '^127'}).IPAddress
-```
-
-Use this IP address (e.g. `192.168.1.42`) when configuring the plugin.
-
-**mDNS (`.local` hostnames):** `yourcomputer.local` works on macOS and most Linux setups (needs `avahi-daemon` on Linux). It's unreliable on corporate, mesh, or multi-subnet networks — use the IP when in doubt.
-
-### Tailscale (different networks, travel)
-
-If you use [Tailscale](https://tailscale.com):
-
-1. Install Tailscale on both your computer and e-reader
-2. Get your computer's Tailscale IP: `tailscale ip -4`
-3. Use that IP in the plugin settings
-
-Tailscale works across networks and through NAT — it's the most reliable option if your e-reader leaves your home network.
-
-### USB (Android debugging)
-
-If you've set up ADB and want to use USB port forwarding:
-
-```bash
-adb reverse tcp:7731 tcp:7731
-```
-
-Then set the plugin host to `localhost` and port `7731`. The e-reader will tunnel through the USB connection to the bridge on your computer.
-
----
-
-## Step 4 — Install the KOReader plugin
+## Install the KOReader plugin
 
 ### Via ADB (Android/Boox)
 
@@ -200,7 +54,7 @@ adb push marginalia.koplugin /sdcard/koreader/plugins/marginalia.koplugin
 
 Copy the `marginalia.koplugin/` folder to `koreader/plugins/` on your device.
 
-### Manual copy (SSH / SFTP)
+### Via SSH / SFTP
 
 ```bash
 scp -r marginalia.koplugin user@device:/sdcard/koreader/plugins/
@@ -210,10 +64,10 @@ Restart KOReader after copying.
 
 ---
 
-## Step 5 — Configure the plugin
+## Configure the plugin
 
 1. Open KOReader → top menu → **Tools** (wrench) → **marginalia**
-2. Set **Host** to your computer's IP or hostname (from [Network setup](#network-setup) above)
+2. Set **Host** to your computer's IP or hostname (see [Network setup](#network-setup) if unsure)
 3. Set **Port** to `7731`
 4. Tap **Test connection** — you should see **✓ Connected**
 
@@ -221,63 +75,87 @@ Restart KOReader after copying.
 
 ---
 
-## Step 6 — Open a book and try it
+## Try it
 
-Open any EPUB in KOReader. marginalia silently requests a Book Index in the background. You'll see a brief loading indicator; once done the index is cached for instant access on future opens.
+Open any EPUB in KOReader. marginalia silently requests a Book Index in the background — once done it's cached for instant access on future opens.
 
-**Select text → Ask AI:** Pick a mode (Who/What is this?, Explain, Story context, Translate). The answer pops up and — with Auto-capture on (default) — the passage is highlighted in the book with the AI answer as the highlight note.
+**Select text → Ask AI:** pick a mode (Who/What is this?, Explain, Story context, Translate). The answer appears and — with Auto-capture on (default) — the passage is highlighted in the book with the AI answer as the highlight note.
 
-**AI: Save Note:** Select text → save → the passage becomes a KOReader highlight and is appended to the book's Obsidian vault note.
+**Top menu → marginalia → Ask AI:** freeform chat grounded in your reading position. Tap **Save as Note** to save the Q&A as a standalone Obsidian note, or **To Book Note** to append it to the book's vault note.
 
-**Browse Book Index:** Top menu → Tools → marginalia → Browse Book Index.
+---
+
+## Network setup
+
+The bridge runs on your computer; the KOReader plugin connects to it over the network.
+
+### Same Wi-Fi (most common)
+
+Find your computer's LAN IP:
+
+```bash
+# macOS
+ipconfig getifaddr en0       # Wi-Fi
+ipconfig getifaddr en1       # Ethernet
+
+# Linux
+ip addr show | grep "inet " | grep -v 127.0.0.1
+
+# Windows (PowerShell)
+(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notmatch '^127'}).IPAddress
+```
+
+Use this IP (e.g. `192.168.1.42`) when configuring the plugin. The setup wizard prints it for you at the end.
+
+**mDNS (`.local` hostnames):** works on macOS and most Linux setups (needs `avahi-daemon` on Linux), but unreliable on corporate, mesh, or multi-subnet networks — use the IP when in doubt.
+
+### Tailscale (different networks, travel)
+
+1. Install Tailscale on both your computer and e-reader
+2. Get your computer's Tailscale IP: `tailscale ip -4`
+3. Use that IP in the plugin settings
+
+### USB (Android debugging)
+
+```bash
+adb reverse tcp:7731 tcp:7731
+```
+
+Set the plugin host to `localhost`, port `7731`. The e-reader tunnels through USB to the bridge on your computer.
 
 ---
 
 ## Running as a service
 
-### macOS — LaunchAgent (starts at login)
+The setup wizard handles this automatically. If you need to manage the service manually:
 
-The easiest way is via the setup wizard — it installs and starts the service automatically:
+### macOS — LaunchAgent
 
-```bash
-marginalia setup
-```
-
-Or run the install script directly:
-
-```bash
-cd bridge
-./install.sh    # detects Python, prompts for vault path, installs and starts the service
-```
-
-To manage it afterwards:
 ```bash
 tail -f ~/Library/Logs/marginalia.log
-launchctl kill TERM gui/$(id -u)/com.marginalia.bridge   # temporary stop (KeepAlive restarts in ~10s)
-launchctl bootout gui/$(id -u)/com.marginalia.bridge   # permanent stop/remove
+launchctl kill TERM gui/$(id -u)/com.marginalia.bridge   # temporary stop
+launchctl bootout gui/$(id -u)/com.marginalia.bridge     # remove permanently
+```
+
+To reinstall (e.g. after changing the Python path):
+
+```bash
+launchctl bootout gui/$(id -u)/com.marginalia.bridge
+marginalia setup   # re-runs install at the end
 ```
 
 ### Linux — systemd user service
 
 ```bash
-# Copy first, then edit — editing the repo file would conflict with git pull
-mkdir -p ~/.config/systemd/user
-cp bridge/marginalia.service ~/.config/systemd/user/
-# Edit the installed copy: update ExecStart (use your venv Python) and Environment vars
-${EDITOR:-nano} ~/.config/systemd/user/marginalia.service
-systemctl --user daemon-reload
-systemctl --user enable --now marginalia
-
-# Check status and logs
 systemctl --user status marginalia
-journalctl --user -u marginalia -f
+journalctl --user -u marginalia -f   # live logs
+systemctl --user restart marginalia
+systemctl --user disable marginalia  # stop auto-start
 ```
 
-### Windows — Task Scheduler or manual
+### Windows
 
-The simplest approach is to run `marginalia serve` manually in a terminal when you want to use it.
-
-To start it automatically at login, create a batch file:
+Run `marginalia serve` manually in a terminal, or add a batch file to Task Scheduler (trigger at logon):
 
 ```bat
 @echo off
@@ -286,7 +164,43 @@ call .venv\Scripts\activate
 marginalia serve
 ```
 
-Then add it to Task Scheduler: open **Task Scheduler** → **Create Basic Task** → trigger at logon → action is your batch file.
+---
+
+## Alternative setup paths
+
+### Docker
+
+```bash
+cp .env.example .env   # uncomment your provider block
+docker compose up -d
+```
+
+The bridge listens on port 7731. Point the KOReader plugin at your machine's IP.
+
+### Manual (no wizard)
+
+<details>
+<summary>Configure by hand (CI, custom environments, scripted deploys)</summary>
+
+```bash
+git clone https://github.com/samfoy/marginalia
+cd marginalia
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[openai,embed]"
+
+export MARGINALIA_OPENAI_API_KEY=sk-...
+export MARGINALIA_MODEL_ID=openai:gpt-4o
+export MARGINALIA_VAULT=~/Documents/YourVault
+# Optional:
+# export MARGINALIA_BOOKS_DIR=Notes/Books
+# export MARGINALIA_CAPTURES_DIR=Notes/Captures
+
+marginalia serve
+```
+
+For permanent configuration, write the exports to `~/.marginalia.env` — `marginalia serve` loads it automatically.
+
+</details>
 
 ---
 
@@ -295,26 +209,24 @@ Then add it to Task Scheduler: open **Task Scheduler** → **Create Basic Task**
 **"Cannot reach host:7731" in KOReader**
 - Verify the bridge is running: `curl http://localhost:7731/ping`
 - Use the IP address instead of a hostname — mDNS (`.local`) is unreliable on many networks
-- Temporarily disable your firewall to test: if that fixes it, add an exception for port 7731
-- If on different networks, use Tailscale or USB forwarding (see [Network setup](#network-setup))
+- Temporarily disable your firewall to test; if that fixes it, add an exception for port 7731
+- On different networks? Use Tailscale or USB forwarding (see [Network setup](#network-setup))
 
 **macOS: `pip install` fails with "externally managed environment"**
 - You need a venv: `python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[openai,embed]"`
 
 **Book Index never completes / times out**
 - Check `~/Library/Logs/marginalia.log` (macOS) or `journalctl --user -u marginalia` (Linux)
-- Very large books (600K+ words) can take several minutes on first generation
-- Knowledge-only mode (without Calibre) is faster
+- Large books (600K+ words) can take several minutes on first generation
+- Knowledge-only mode (without Calibre) is faster but less accurate
 
 **Calibre not found**
-- Check your library path (from repo root with venv active): `python3 -c "import sys; sys.path.insert(0,'bridge'); from book_finder import CALIBRE_LIB; print(CALIBRE_LIB)"`
-- Override with: `export MARGINALIA_CALIBRE_DB="path/to/your/Calibre Library"`
+- Override: `export MARGINALIA_CALIBRE_DB="path/to/your/Calibre Library"`
 - See [docs/calibre.md](calibre.md) for details
 
 **Notes not appearing in Obsidian**
 - Confirm `MARGINALIA_VAULT` points to the folder containing `.obsidian/`
-- Notes queue offline and flush automatically when you open a book — check the note_queue.json file on device if they seem stuck
-- Check bridge logs for write errors
+- Notes queue offline and flush automatically on next book open — check `note_queue.json` on device if stuck
 
 ---
 
@@ -322,4 +234,4 @@ Then add it to Task Scheduler: open **Task Scheduler** → **Create Basic Task**
 
 - [docs/providers.md](providers.md) — model selection, cost estimates, multiple providers
 - [docs/calibre.md](calibre.md) — full EPUB extraction, RAG, series intelligence
-- [docs/obsidian.md](obsidian.md) — vault structure, note format, offline queue
+- [docs/obsidian.md](obsidian.md) — vault structure, note formats, offline queue
