@@ -1,9 +1,8 @@
 """
 rag.py — Position-bounded retrieval over book text for marginalia.
 
-At Book Index generation time we chunk the EPUB, embed every chunk with Cohere
-(via Bedrock), and store the vectors + chunk metadata in a sidecar alongside
-the Book Index cache:
+At Book Index generation time we chunk the EPUB, embed every chunk, and store
+the vectors + chunk metadata in a sidecar alongside the Book Index cache:
 
     ~/.marginalia/cache/<hash>.rag.npy    — float16 matrix (n_chunks, dim), L2-normalized
     ~/.marginalia/cache/<hash>.rag.json   — {"model", "dim", "count", "chunks":[{chapter, position_pct, text}]}
@@ -13,10 +12,15 @@ reader's current position (spoiler-safe BY CONSTRUCTION — future chunks are
 never even considered), and return the top-k by cosine similarity.
 
 This grounds /chat, /recap, /wiki, and /section answers in the actual prose the
-reader has already seen, instead of relying only on the lossy X-Ray timeline.
+reader has already seen, instead of relying only on the lossy Book Index timeline.
 
-Embeddings go through Bedrock (Cohere embed-english-v3) — no heavy local model
-dependency, works on Python 3.14, uses the same AWS profile as everything else.
+Three embedding backends are supported:
+  - local: sentence-transformers (default, ~80MB, no API key, works offline)
+  - openai: text-embedding-3-small (if MARGINALIA_OPENAI_API_KEY is set)
+  - bedrock: Cohere embed-english-v3 via AWS Bedrock (original behaviour)
+
+Auto-detection order: OpenAI key present → openai, sentence-transformers
+installed → local, else bedrock.
 """
 
 import json
@@ -35,17 +39,79 @@ logger = logging.getLogger("marginalia.rag")
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-EMBED_MODEL   = os.environ.get("PIREAD_EMBED_MODEL", "cohere.embed-english-v3")
-CHUNK_CHARS   = int(os.environ.get("PIREAD_RAG_CHUNK_CHARS", "1600"))   # ~400 tokens
-CHUNK_OVERLAP = int(os.environ.get("PIREAD_RAG_OVERLAP", "200"))
-EMBED_BATCH   = int(os.environ.get("PIREAD_RAG_BATCH", "96"))           # Cohere max texts/call
-EMBED_MAXLEN  = int(os.environ.get("PIREAD_RAG_MAXLEN", "2048"))         # Cohere hard per-text char limit
-EMBED_WORKERS = int(os.environ.get("PIREAD_RAG_WORKERS", "4"))
-DEFAULT_TOP_K = int(os.environ.get("PIREAD_RAG_TOP_K", "8"))
+EMBED_MODEL   = os.environ.get("MARGINALIA_EMBED_MODEL", "cohere.embed-english-v3")
+CHUNK_CHARS   = int(os.environ.get("MARGINALIA_RAG_CHUNK_CHARS", "1600"))   # ~400 tokens
+CHUNK_OVERLAP = int(os.environ.get("MARGINALIA_RAG_OVERLAP", "200"))
+EMBED_BATCH   = int(os.environ.get("MARGINALIA_RAG_BATCH", "96"))           # Cohere max texts/call
+EMBED_MAXLEN  = int(os.environ.get("MARGINALIA_RAG_MAXLEN", "2048"))        # Cohere hard per-text char limit
+EMBED_WORKERS = int(os.environ.get("MARGINALIA_RAG_WORKERS", "4"))
+DEFAULT_TOP_K = int(os.environ.get("MARGINALIA_RAG_TOP_K", "8"))
+
+EMBED_BACKEND = os.environ.get("MARGINALIA_EMBED_BACKEND", "auto")
+# "auto"    = prefer OpenAI if key available, else local sentence-transformers, else bedrock
+# "local"   = always use sentence-transformers (no API key needed)
+# "openai"  = always use openai text-embedding-3-small
+# "bedrock" = always use Cohere via AWS Bedrock (original behaviour)
+
+LOCAL_EMBED_MODEL = os.environ.get("MARGINALIA_LOCAL_EMBED_MODEL", "all-MiniLM-L6-v2")
+# sentence-transformers model name. all-MiniLM-L6-v2 is ~80MB, fast, good quality.
+# Alternative: "all-mpnet-base-v2" (420MB, higher quality)
 
 CACHE_DIR = Path.home() / ".marginalia" / "cache"
 
 _PARA_SPLIT = re.compile(r"\n\s*\n")
+
+
+# ── Backend helpers ──────────────────────────────────────────────────────────
+
+def _get_embed_backend() -> str:
+    """Resolve 'auto' to a concrete backend name."""
+    if EMBED_BACKEND != "auto":
+        return EMBED_BACKEND
+    # Auto-detect: OpenAI key → openai, else try local, else bedrock
+    if os.environ.get("MARGINALIA_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    try:
+        import sentence_transformers  # noqa: F401
+        return "local"
+    except ImportError:
+        return "bedrock"
+
+
+def _embed_local(texts: list[str]) -> "np.ndarray":
+    """Embed using local sentence-transformers (no API key needed)."""
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        raise RuntimeError(
+            "sentence-transformers not installed — pip install sentence-transformers"
+        )
+    # Lazy-load and cache the model across calls
+    if not hasattr(_embed_local, "_model") or _embed_local._model_name != LOCAL_EMBED_MODEL:
+        logger.info("rag: loading local embed model %s", LOCAL_EMBED_MODEL)
+        _embed_local._model = SentenceTransformer(LOCAL_EMBED_MODEL)
+        _embed_local._model_name = LOCAL_EMBED_MODEL
+    vecs = _embed_local._model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+    return np.array(vecs, dtype=np.float16)
+
+
+def _embed_openai(texts: list[str]) -> "np.ndarray":
+    """Embed using OpenAI text-embedding-3-small."""
+    try:
+        import openai
+    except ImportError:
+        raise RuntimeError("openai package not installed — pip install openai")
+    api_key = os.environ.get("MARGINALIA_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("MARGINALIA_OPENAI_API_KEY not set")
+    client = openai.OpenAI(api_key=api_key)
+    # If EMBED_MODEL was set to a Cohere model ID, fall back to the OpenAI default
+    model = EMBED_MODEL if not EMBED_MODEL.startswith("cohere.") else "text-embedding-3-small"
+    resp = client.embeddings.create(input=texts, model=model)
+    vecs = np.array([e.embedding for e in resp.data], dtype=np.float32)
+    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+    vecs = (vecs / np.maximum(norms, 1e-8)).astype(np.float16)
+    return vecs
 
 
 # ── Bedrock embedding client (reuse xray_generator's cached client) ──────────
@@ -57,7 +123,7 @@ def _embed_client():
     return _client()
 
 
-def _embed_batch(texts: list[str], input_type: str) -> list[list[float]]:
+def _embed_bedrock(texts: list[str], input_type: str = "search_document") -> "np.ndarray":
     """Embed a single batch (≤ EMBED_BATCH texts) via Cohere on Bedrock."""
     # Cohere enforces a hard 2048-char limit per text. Truncate defensively;
     # the lost tail is covered by the next chunk's overlap.
@@ -74,27 +140,44 @@ def _embed_batch(texts: list[str], input_type: str) -> list[list[float]]:
     # Cohere v3 returns a plain list of vectors; v4/embedding_types returns {"float": [...]}
     if isinstance(embs, dict):
         embs = embs.get("float") or next(iter(embs.values()))
-    return embs
+    return np.array(embs, dtype=np.float16)
 
 
-def _embed_texts(texts: list[str], input_type: str) -> np.ndarray:
+def _embed_batch(texts: list[str], input_type: str = "search_document") -> "np.ndarray":
+    """Route to the configured embedding backend.
+
+    `input_type` is forwarded to the Bedrock/Cohere backend (search_document
+    vs search_query); local and OpenAI backends ignore it.
+    """
+    backend = _get_embed_backend()
+    logger.debug("rag: embedding %d texts via %s", len(texts), backend)
+    if backend == "local":
+        return _embed_local(texts)
+    elif backend == "openai":
+        return _embed_openai(texts)
+    else:
+        return _embed_bedrock(texts, input_type)
+
+
+def _embed_texts(texts: list[str], input_type: str = "search_document") -> np.ndarray:
     """Embed many texts (batched + parallel). Returns L2-normalized float32 matrix."""
     if not texts:
         return np.zeros((0, 0), dtype=np.float32)
 
     batches = [texts[i:i + EMBED_BATCH] for i in range(0, len(texts), EMBED_BATCH)]
-    results: list[list[list[float]]] = [None] * len(batches)  # type: ignore
+    results: list = [None] * len(batches)
 
     def run(i: int, batch: list[str]):
-        results[i] = _embed_batch(batch, input_type)
+        arr = _embed_batch(batch, input_type)
+        # Normalise each backend's output to float32 for consistent scoring
+        results[i] = arr.astype(np.float32)
 
     with ThreadPoolExecutor(max_workers=EMBED_WORKERS) as ex:
         futs = [ex.submit(run, i, b) for i, b in enumerate(batches)]
         for f in futs:
             f.result()
 
-    vecs = [v for batch in results for v in batch]
-    mat = np.asarray(vecs, dtype=np.float32)
+    mat = np.vstack(results)
     # L2-normalize so dot product == cosine similarity
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
@@ -206,16 +289,22 @@ def build_index(content: EpubContent, book_hash: str) -> int:
         logger.warning("rag: no chunks for %s", book_hash)
         return 0
 
-    logger.info("rag: embedding %d chunks for %s (%s)", len(chunks), book_hash, EMBED_MODEL)
+    backend = _get_embed_backend()
+    model_tag = LOCAL_EMBED_MODEL if backend == "local" else (
+        "text-embedding-3-small" if backend == "openai" else EMBED_MODEL
+    )
+    logger.info("rag: embedding %d chunks for %s via %s (%s)",
+                len(chunks), book_hash, backend, model_tag)
     mat = _embed_texts([c["text"] for c in chunks], "search_document")
     npy, meta = _paths(book_hash)
 
     np.save(npy, mat.astype(np.float16))
     meta.write_text(json.dumps({
-        "model": EMBED_MODEL,
-        "dim":   int(mat.shape[1]) if mat.size else 0,
-        "count": len(chunks),
-        "chunks": chunks,
+        "model":   model_tag,
+        "backend": backend,
+        "dim":     int(mat.shape[1]) if mat.size else 0,
+        "count":   len(chunks),
+        "chunks":  chunks,
     }, ensure_ascii=False), encoding="utf-8")
     logger.info("rag: index built for %s — %d chunks, dim=%d",
                 book_hash, len(chunks), mat.shape[1] if mat.size else 0)
