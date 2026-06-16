@@ -107,6 +107,8 @@ Common model IDs:
 
 ### B) OpenAI GPT via bedrock-mantle
 
+> **⚠ Amazon-internal only.** `bedrock-mantle.us-east-2.api.aws` is an AWS-internal service that requires your account to be explicitly allowlisted. External users will get auth failures. If you're not an Amazon employee with Bedrock access, use Option A (direct OpenAI) instead.
+
 bedrock-mantle (`bedrock-mantle.us-east-2.api.aws`) gives access to GPT models using SigV4 auth. Your AWS account must be allowlisted. Model IDs use the `openai.` prefix (without a colon — this is the legacy format that routes to bedrock-mantle):
 
 ```bash

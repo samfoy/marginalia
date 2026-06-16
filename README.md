@@ -161,7 +161,7 @@ All settings via environment variables.
 | `MARGINALIA_FALLBACK_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | Terminal fallback |
 | `MARGINALIA_MODEL_CHAIN` | *(auto)* | Explicit comma-separated chain, overrides auto-derivation |
 | `MARGINALIA_MODEL_COOLDOWN_S` | `120` | Circuit breaker window (seconds) |
-| `MARGINALIA_COMPANION_EFFORT` | `low` | Reasoning effort: `none\|low\|medium\|high` |
+| `MARGINALIA_COMPANION_EFFORT` | `low` | Reasoning effort `none\|low\|medium\|high` (OpenAI/Bedrock; no-op for Anthropic direct) |
 | `MARGINALIA_MAX_TOKENS` | `600` | Max tokens for companion responses |
 
 ### AWS Bedrock (optional)
@@ -177,7 +177,7 @@ All settings via environment variables.
 |---|---|---|
 | `openai:` | OpenAI API directly | `openai:gpt-4o` |
 | `anthropic:` | Anthropic API directly | `anthropic:claude-haiku-3-5` |
-| `openai.` | AWS bedrock-mantle | `openai.gpt-5.5` (requires allowlisted AWS account) |
+| `openai.` | AWS bedrock-mantle (**Amazon-internal only**) | `openai.gpt-4o` |
 | *(other)* | AWS Bedrock invoke_model | `us.anthropic.claude-sonnet-4-6` |
 
 The fallback chain is derived automatically from the primary model's provider — non-AWS primaries get provider-appropriate cheap fallbacks, not useless AWS fallbacks.

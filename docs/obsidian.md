@@ -119,7 +119,6 @@ export MARGINALIA_BOOKS_DIR=~/Documents/YourVault/Reading/Notes
 ```
 
 Add it to your `.env` or LaunchAgent plist alongside `MARGINALIA_VAULT`.
-```
 
 Restart the bridge after changing.
 

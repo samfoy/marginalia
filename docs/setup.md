@@ -210,7 +210,7 @@ cd bridge
 To manage it afterwards:
 ```bash
 tail -f ~/Library/Logs/marginalia.log
-launchctl stop com.marginalia.bridge   # temporary pause (KeepAlive restarts it ~10s later)
+launchctl kill TERM gui/$(id -u)/com.marginalia.bridge   # temporary stop (KeepAlive restarts in ~10s)
 launchctl bootout gui/$(id -u)/com.marginalia.bridge   # permanent stop/remove
 ```
 

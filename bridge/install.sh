@@ -87,21 +87,38 @@ elif [[ -n "${MARGINALIA_ANTHROPIC_API_KEY:-}" ]]; then
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     API_KEY_VAR="MARGINALIA_ANTHROPIC_API_KEY"
     API_KEY_VAL="$ANTHROPIC_API_KEY"
+elif [[ -n "${MARGINALIA_AWS_PROFILE:-}" ]]; then
+    API_KEY_VAR="MARGINALIA_AWS_PROFILE"
+    API_KEY_VAL="$MARGINALIA_AWS_PROFILE"
+elif [[ -n "${AWS_PROFILE:-}" ]]; then
+    API_KEY_VAR="MARGINALIA_AWS_PROFILE"
+    API_KEY_VAL="$AWS_PROFILE"
 fi
 
 if [[ -z "$API_KEY_VAR" ]]; then
     echo ""
-    echo "No API key found in environment."
-    echo "Providers: openai (sk-...) or anthropic (sk-ant-...). Leave empty to add later."
-    read -r -p "  API key (or Enter to skip): " API_KEY_VAL
+    echo "No credentials found in environment."
+    echo "  openai    — enter key starting with sk-..."
+    echo "  anthropic — enter key starting with sk-ant-..."
+    echo "  aws       — enter your AWS profile name (e.g. default)"
+    echo "  Leave empty to add manually to $PLIST_DST"
+    read -r -p "  Key or profile (Enter to skip): " API_KEY_VAL
     if [[ "$API_KEY_VAL" == sk-ant-* ]]; then
         API_KEY_VAR="MARGINALIA_ANTHROPIC_API_KEY"
-    elif [[ -n "$API_KEY_VAL" ]]; then
+    elif [[ "$API_KEY_VAL" == sk-* ]]; then
         API_KEY_VAR="MARGINALIA_OPENAI_API_KEY"
+    elif [[ -n "$API_KEY_VAL" ]]; then
+        API_KEY_VAR="MARGINALIA_AWS_PROFILE"
     fi
 fi
 
-[[ -n "$API_KEY_VAR" ]] && echo "✓ API key: ${API_KEY_VAR} (${API_KEY_VAL:0:8}...)" || echo "⚠ No API key set — Book Index generation will fail until you add one to $PLIST_DST"
+if [[ -n "$API_KEY_VAR" ]]; then
+    [[ "$API_KEY_VAR" == "MARGINALIA_AWS_PROFILE" ]] \
+        && echo "✓ AWS profile: $API_KEY_VAL" \
+        || echo "✓ API key: ${API_KEY_VAR} (${API_KEY_VAL:0:8}...)"
+else
+    echo "⚠ No credentials set — Book Index generation will fail until you configure $PLIST_DST"
+fi
 
 # Set a sensible default model ID to match the provider
 if [[ "$API_KEY_VAR" == "MARGINALIA_ANTHROPIC_API_KEY" ]]; then
