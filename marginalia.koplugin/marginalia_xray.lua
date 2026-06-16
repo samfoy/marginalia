@@ -59,7 +59,7 @@ end
 
 -- Animated "Asking Pi…" indicator. Returns close().
 local function show_loading(label)
-    local base, dots, idx, closed, task = label or _("Asking Pi"), { ".", "..", "..." }, 1, false, nil
+    local base, dots, idx, closed, task = label or _("Asking…"), { ".", "..", "..." }, 1, false, nil
     local dialog = InfoMessage:new{ text = base .. dots[idx] }
     UIManager:show(dialog)
     local function tick()
@@ -148,7 +148,7 @@ function XRayUI._wikiLookup(entity, kind)
     end
     local known = entity.description or entity.definition or entity.biography
                   or entity.context_in_book or ""
-    local close_loading = show_loading(_("Asking Pi"))
+    local close_loading = show_loading(_("Asking…"))
     ctx.bridge:wikiAsync({
         book_title  = ctx.book_title,
         book_author = ctx.book_author,
@@ -166,8 +166,7 @@ function XRayUI._wikiLookup(entity, kind)
         })
     end, function(err)
         close_loading()
-        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 5 })
-    end)
+        UIManager:show(InfoMessage:new{ text = T(_("Marginalia: %1"), err), timeout = 5 })    end)
 end
 
 -- Entity detail with optional action buttons (Tell me more / Where appears).
@@ -494,7 +493,7 @@ function XRayUI.showMenu(xray, reading_pct)
 
     local book_type = xray.book_type or "fiction"
     XRayUI._menu = ButtonDialog:new{
-        title       = _("Pi X-Ray") .. (reading_pct and string.format(" [%d%%]", reading_pct) or ""),
+        title       = _("Book Index") .. (reading_pct and string.format(" [%d%%]", reading_pct) or ""),
         title_align = "center",
         buttons     = buttons,
     }

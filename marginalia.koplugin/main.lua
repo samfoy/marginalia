@@ -750,7 +750,7 @@ function PiRead:createHighlightWithNote(captured, label, answer)
     end
     local note
     if answer and answer ~= "" then
-        note = "\u{1F916} Pi" .. (label and (" · " .. label) or "") .. "\n\n" .. answer
+        note = "\u{1F916} marginalia" .. (label and (" · " .. label) or "") .. "\n\n" .. answer
     elseif label and label ~= "" then
         note = label   -- manual save: just the user's context
     else
@@ -1193,7 +1193,7 @@ function PiRead:buildMenu()
             local s = self:loadSettings(); s.auto_capture = not s.auto_capture; self:saveSettings(s)
         end,
         help_text = _("When on, a successful Ask AI lookup highlights the passage "
-            .. "(note = Pi's answer) and saves the passage + answer to the book's Obsidian note."),
+            .. "(note = AI's answer) and saves the passage + answer to the book's Obsidian note."),
     })
 
     -- Auto-save chat Q&As to vault

@@ -304,7 +304,7 @@ function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform)
         }
         items[#items+1] = {
             text      = _("Ask AI: what's happening here?"),
-            mandatory = _("Sends passage to Pi"),
+            mandatory = _("Sends to Marginalia"),
             callback  = function()
                 UIManager:close(Context._menu)
                 Context._askAboutChapter(text, chapter_title, ui, bridge)
@@ -353,7 +353,7 @@ function Context._askAboutChapter(chapter_text, chapter_title, ui, bridge)
     local didx   = 1
     local dtask  = nil
     local dclosed = false
-    local dialog = InfoMessage:new{ text = _("Asking Pi.") }
+    local dialog = InfoMessage:new{ text = _("Asking…") }
     UIManager:show(dialog)
     local function dtick()
         if dclosed then return end
@@ -377,14 +377,14 @@ function Context._askAboutChapter(chapter_text, chapter_title, ui, bridge)
     }, function(response)
         close_loading()
         UIManager:show(TextViewer:new{
-            title  = chapter_title and T(_("Pi on %1"), chapter_title) or _("Pi summary"),
+            title  = chapter_title and T(_("Marginalia: %1"), chapter_title) or _("AI summary"),
             text   = response,
             width  = math.floor(Screen:getWidth()  * 0.92),
             height = math.floor(Screen:getHeight() * 0.78),
         })
     end, function(err)
         close_loading()
-        UIManager:show(InfoMessage:new{ text = T(_("Pi: %1"), err), timeout = 5 })
+        UIManager:show(InfoMessage:new{ text = T(_("Marginalia: %1"), err), timeout = 5 })
     end)
 end
 
