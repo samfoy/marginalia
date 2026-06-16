@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.egg-info
+marginalia.koplugin
+tools
+docs
+*.md
+.env
+.env.example
+marginalia_cache

@@ -1,0 +1,59 @@
+# marginalia docker-compose.yml
+# Usage:
+#   cp .env.example .env && edit .env
+#   docker compose up -d
+#
+# The bridge listens on port 7731. Point the KOReader plugin at your machine's
+# IP address (or Tailscale IP) with port 7731.
+
+services:
+  marginalia:
+    build: .
+    image: ghcr.io/samfoy/marginalia:latest
+    container_name: marginalia
+    restart: unless-stopped
+    ports:
+      - "7731:7731"
+    environment:
+      # ── Required: set ONE provider ──────────────────────────────────────────
+      # OpenAI:
+      - MARGINALIA_OPENAI_API_KEY=${MARGINALIA_OPENAI_API_KEY:-}
+      - MARGINALIA_MODEL_ID=${MARGINALIA_MODEL_ID:-openai:gpt-4o}
+      # Anthropic (uncomment and comment out OpenAI above):
+      # - MARGINALIA_ANTHROPIC_API_KEY=${MARGINALIA_ANTHROPIC_API_KEY:-}
+      # - MARGINALIA_MODEL_ID=anthropic:claude-opus-4-5
+      # AWS Bedrock (uncomment and add AWS credential volume below):
+      # - MARGINALIA_AWS_PROFILE=${MARGINALIA_AWS_PROFILE:-default}
+      # - MARGINALIA_AWS_REGION=${MARGINALIA_AWS_REGION:-us-west-2}
+      # - MARGINALIA_MODEL_ID=us.anthropic.claude-sonnet-4-6
+
+      # ── Required: Obsidian vault ─────────────────────────────────────────────
+      # The vault is mounted read-write at /vault inside the container.
+      - MARGINALIA_VAULT=/vault
+
+      # ── Optional ─────────────────────────────────────────────────────────────
+      - MARGINALIA_PORT=7731
+      - MARGINALIA_EMBED_BACKEND=${MARGINALIA_EMBED_BACKEND:-openai}
+      # - MARGINALIA_TOKEN=${MARGINALIA_TOKEN:-}
+
+    volumes:
+      # Obsidian vault — book notes are written here
+      - ${MARGINALIA_VAULT_HOST:-~/Documents}:/vault
+
+      # Calibre library — set CALIBRE_HOST to your library directory
+      # Uncomment if you use Calibre:
+      # - ${CALIBRE_HOST:-~/Calibre Library}:/calibre:ro
+
+      # Persistent Book Index + RAG cache across container restarts
+      - marginalia_cache:/root/.marginalia/cache
+
+      # AWS credentials (Bedrock users only — uncomment if needed):
+      # - ~/.aws:/root/.aws:ro
+
+    # Uncomment to set Calibre library path inside the container:
+    # environment:
+    #   - MARGINALIA_CALIBRE_DB=/calibre
+
+volumes:
+  marginalia_cache:
+    driver: local

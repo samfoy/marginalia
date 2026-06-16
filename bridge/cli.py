@@ -3,12 +3,38 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
+
+CONFIG_FILE = Path.home() / ".marginalia.env"
 
 
 def _ensure_bridge_on_path() -> None:
     bridge_dir = os.path.dirname(os.path.abspath(__file__))
     if bridge_dir not in sys.path:
         sys.path.insert(0, bridge_dir)
+
+
+def _load_config() -> None:
+    """Load ~/.marginalia.env written by 'marginalia setup' (if it exists).
+    Uses set -a semantics: every KEY=VALUE is exported to the environment,
+    but existing env vars take precedence (so CLI overrides still work).
+    """
+    if not CONFIG_FILE.exists():
+        return
+    for line in CONFIG_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        # Don't override values already in the environment
+        if key and key not in os.environ:
+            os.environ[key] = val
 
 
 def serve(argv: list[str] | None = None) -> None:
@@ -23,8 +49,10 @@ def serve(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    _load_config()
+
     if args.port is not None:
-        os.environ.setdefault("MARGINALIA_PORT", str(args.port))
+        os.environ["MARGINALIA_PORT"] = str(args.port)
 
     _ensure_bridge_on_path()
     # Change cwd to bridge/ so relative imports inside bridge modules resolve.
@@ -34,6 +62,13 @@ def serve(argv: list[str] | None = None) -> None:
     main()
 
 
+def setup(argv: list[str] | None = None) -> None:
+    """Run the interactive setup wizard."""
+    _ensure_bridge_on_path()
+    from setup_wizard import run
+    run()
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="marginalia",
@@ -41,10 +76,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="Start the bridge server.")
+    sub.add_parser("setup", help="Interactive first-run setup wizard.")
     args, rest = parser.parse_known_args(argv)
 
     if args.command == "serve":
         serve(rest)
+    elif args.command == "setup":
+        setup(rest)
     else:
         parser.print_help()
 

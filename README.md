@@ -45,7 +45,29 @@ marginalia runs a small bridge server on your Mac that your KOReader device talk
 
 ## Quick start
 
-### Option A — OpenAI
+### Option A — Setup wizard (recommended)
+
+```bash
+git clone https://github.com/samfoy/marginalia
+cd marginalia
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[openai,embed]"   # or [anthropic,embed] or [bedrock]
+marginalia setup
+```
+
+The wizard picks your provider, validates the API key, finds your Obsidian vault, and installs the background service — then prints the exact host/port to paste into KOReader.
+
+### Option B — Docker
+
+```bash
+# Copy and edit the env file
+cp .env.example .env  # uncomment your provider block
+docker compose up -d
+```
+
+The bridge listens on port 7731. Point the KOReader plugin at your machine's IP.
+
+### Option C — Manual
 
 ```bash
 git clone https://github.com/samfoy/marginalia
@@ -57,38 +79,7 @@ export MARGINALIA_OPENAI_API_KEY=sk-...
 export MARGINALIA_MODEL_ID=openai:gpt-4o
 export MARGINALIA_VAULT=~/Documents/YourObsidianVault
 
-marginalia serve
-# Bridge listening on :7731
-```
-
-### Option B — Anthropic
-
-```bash
-git clone https://github.com/samfoy/marginalia
-cd marginalia
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[anthropic,embed]"
-
-export MARGINALIA_ANTHROPIC_API_KEY=sk-ant-...
-export MARGINALIA_MODEL_ID=anthropic:claude-opus-4-5
-export MARGINALIA_VAULT=~/Documents/YourObsidianVault
-
-marginalia serve
-```
-
-### Option C — AWS Bedrock
-
-```bash
-git clone https://github.com/samfoy/marginalia
-cd marginalia
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[bedrock]"
-
-export MARGINALIA_AWS_PROFILE=your-aws-profile
-export MARGINALIA_MODEL_ID=us.anthropic.claude-sonnet-4-6
-export MARGINALIA_VAULT=~/Documents/YourObsidianVault
-
-marginalia serve
+marginalia serve   # bridge listens on :7731
 ```
 
 ---
