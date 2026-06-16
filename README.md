@@ -130,7 +130,7 @@ cd bridge
 To manage it afterwards:
 ```bash
 tail -f ~/Library/Logs/marginalia.log
-launchctl kill TERM gui/$(id -u)/com.marginalia.bridge   # stop
+launchctl kill TERM gui/$(id -u)/com.marginalia.bridge   # temporary stop (KeepAlive restarts in ~10s; use bootout to remove permanently)
 launchctl bootout gui/$(id -u)/com.marginalia.bridge   # permanent stop/remove
 ```
 
@@ -148,6 +148,7 @@ All settings via environment variables.
 |---|---|---|
 | `MARGINALIA_PORT` | `7731` | Bridge HTTP port |
 | `MARGINALIA_VAULT` | `~/Documents` | Obsidian vault root |
+| `MARGINALIA_BOOKS_DIR` | `<vault>/Notes/Books` | Where book note files are saved |
 | `MARGINALIA_TOKEN` | *(empty)* | Shared secret (set same in plugin settings) |
 
 ### LLM providers
@@ -187,7 +188,7 @@ The fallback chain is derived automatically from the primary model's provider â€
 |---|---|---|
 | `MARGINALIA_EMBED_BACKEND` | `auto` | `auto\|local\|openai\|bedrock` |
 | `MARGINALIA_LOCAL_EMBED_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model (~80MB) |
-| `MARGINALIA_EMBED_MODEL` | `cohere.embed-english-v3` | Model ID for OpenAI/Bedrock embedding |
+| `MARGINALIA_EMBED_MODEL` | `cohere.embed-english-v3` | Embedding model ID (Bedrock default; for OpenAI use `text-embedding-3-small`) |
 | `MARGINALIA_RAG_CHUNK_CHARS` | `1600` | Characters per chunk |
 | `MARGINALIA_XRAY_MAX_TOKENS` | `16384` | Max tokens for Book Index generation |
 | `MARGINALIA_CHUNK_MODEL_ID` | *(same as MODEL_ID)* | Model for chunked large-book processing |

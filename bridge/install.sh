@@ -200,7 +200,7 @@ if [[ -z "${API_KEY_VAR:-}" ]]; then
     echo ""
 fi
 echo "Bridge management:"
-echo "  launchctl kill TERM gui/$(id -u)/${LABEL}   # stop"
+echo "  launchctl kill TERM gui/$(id -u)/${LABEL}   # temporary stop (KeepAlive restarts in ~10s)"
 echo "  launchctl bootout ${GUI_DOMAIN}/${LABEL}     # remove"
 echo "  tail -f $LOG_PATH"
 echo "────────────────────────────────────────────────────────" 

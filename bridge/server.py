@@ -22,6 +22,7 @@ Config via environment variables (all optional):
   MARGINALIA_TOKEN        Shared secret (empty = no auth)  (default: "")
   MARGINALIA_MAX_TOKENS   Max tokens for /ask responses    (default: 600)
   MARGINALIA_CALIBRE_DB   Path to Calibre library dir      (default: ~/Calibre Library)
+  MARGINALIA_BOOKS_DIR   Vault subdirectory for book notes  (default: Notes/Books relative to vault)
   MARGINALIA_VAULT        Obsidian vault root              (default: ~/Documents)
   MARGINALIA_OPENAI_API_KEY    OpenAI API key for direct OpenAI models   (default: "")
   MARGINALIA_ANTHROPIC_API_KEY Anthropic API key for direct Anthropic    (default: "")
@@ -67,7 +68,8 @@ MODEL_ID   = os.environ.get("MARGINALIA_MODEL_ID", "openai:gpt-4o")
 TOKEN      = os.environ.get("MARGINALIA_TOKEN", "")
 MAX_TOKENS = int(os.environ.get("MARGINALIA_MAX_TOKENS", 600))
 VAULT_ROOT = os.path.expanduser(os.environ.get("MARGINALIA_VAULT", "~/Documents"))
-BOOKS_DIR  = os.path.join(VAULT_ROOT, "Notes", "Books")
+_default_books = os.path.join(VAULT_ROOT, "Notes", "Books")
+BOOKS_DIR  = os.path.expanduser(os.environ.get("MARGINALIA_BOOKS_DIR", _default_books))
 # Reasoning effort for interactive companion calls.
 COMPANION_EFFORT = os.environ.get("MARGINALIA_COMPANION_EFFORT", "low")
 

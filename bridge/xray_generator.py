@@ -2,7 +2,7 @@
 xray_generator.py — Generate Book Index data from EPUB content via any configured LLM provider.
 
 Three strategies based on book size:
-  single_shot   < 560K chars  (~140K tokens) — one Claude call, full text
+  single_shot   < 560K chars  (~140K tokens) — one LLM call, full text
   two_pass      < 1.6M chars  (~400K tokens) — two halves, merge
   chunked       anything larger               — chapter groups ~120K tokens each
 

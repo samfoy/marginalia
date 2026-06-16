@@ -85,7 +85,7 @@ Then load it:
 set -a && source .env && set +a
 
 # Windows (PowerShell):
-Get-Content .env | Where-Object { $_ -match '^[^#].+=.' } | ForEach-Object { $k,$v=$_.Split('=',2); [System.Environment]::SetEnvironmentVariable($k.Trim(),$v.Trim(),'Process') }
+Get-Content .env | Where-Object { $_ -match '^(export\s+)?[A-Z_]+=' } | ForEach-Object { $line = $_ -replace '^export\s+',''; $k,$v=$line.Split('=',2); [System.Environment]::SetEnvironmentVariable($k.Trim(),$v.Trim(),'Process') }
 ```
 
 > **Note:** This only applies to the current terminal session. For permanent configuration use the LaunchAgent (`install.sh`) or systemd unit — they bake env vars into the service definition.
