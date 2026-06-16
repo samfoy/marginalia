@@ -48,7 +48,7 @@ marginalia runs a small bridge server on your Mac that your KOReader device talk
 ### Option A — OpenAI
 
 ```bash
-git clone https://github.com/samfoy/piread marginalia
+git clone https://github.com/samfoy/marginalia
 cd marginalia
 pip install -e ".[openai,embed]"
 
@@ -116,19 +116,18 @@ Top menu → Tools (wrench icon) → **marginalia**
 ## Running as a background service (macOS)
 
 ```bash
-# Edit the plist — update your project path and env vars
-$EDITOR bridge/com.sam.marginalia.plist
-
-# Install as a LaunchAgent (starts at login, restarts on crash)
-cp bridge/com.sam.marginalia.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sam.marginalia.plist
-
-# Verify
-curl http://localhost:7731/ping   # → pong
-
-# Logs
-tail -f ~/Library/Logs/marginalia.log
+cd bridge
+./install.sh   # detects Python, prompts for vault path, installs and starts the service
 ```
+
+To manage it afterwards:
+```bash
+tail -f ~/Library/Logs/marginalia.log
+launchctl stop  com.marginalia.bridge   # temporary stop (KeepAlive restarts it within ~10s)
+launchctl bootout gui/$(id -u)/com.marginalia.bridge   # permanent stop/remove
+```
+
+For **Linux**, use the included systemd unit — see `bridge/marginalia.service` for installation instructions.
 
 ---
 
@@ -222,7 +221,7 @@ marginalia looks for Calibre's library at `~/Calibre Library/metadata.db` (the m
 ## Development
 
 ```bash
-git clone https://github.com/samfoy/piread marginalia
+git clone https://github.com/samfoy/marginalia
 cd marginalia
 pip install -e ".[all]"
 

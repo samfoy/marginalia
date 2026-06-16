@@ -1,3 +1,14 @@
+# marginalia dependencies
+# ⚠ DO NOT run `pip install -r requirements.txt` — this installs ALL providers.
+# Instead, install only what you need via pyproject.toml extras:
+#
+#   pip install -e ".[openai,embed]"    # OpenAI + local embeddings
+#   pip install -e ".[anthropic,embed]" # Anthropic + local embeddings
+#   pip install -e ".[bedrock]"         # AWS Bedrock
+#   pip install -e ".[all]"             # everything
+#
+# This file is a reference listing only — for CI or advanced users.
+
 # Core (always required)
 numpy
 

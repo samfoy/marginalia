@@ -30,13 +30,13 @@ Calibre needs the EPUBs in its library. Drag-and-drop EPUB files into the Calibr
 
 ### 3. Check the library path
 
-marginalia looks for Calibre's database at `~/Calibre Library/metadata.db`. If your library is elsewhere:
+marginalia looks for your Calibre library directory at `~/Calibre Library/` (the macOS default). Point `MARGINALIA_CALIBRE_DB` to the **library folder** (not the `.db` file inside it):
 
 ```bash
-export MARGINALIA_CALIBRE_DB=/path/to/your/Calibre Library/metadata.db
+export MARGINALIA_CALIBRE_DB="/path/to/your/Calibre Library"
 ```
 
-Or edit `CALIBRE_DB` in `bridge/book_finder.py`.
+Or edit `CALIBRE_LIB` in `bridge/book_finder.py`.
 
 To find your library path in Calibre: **Preferences → Miscellaneous → Open Calibre configuration directory** — the library is one level up.
 

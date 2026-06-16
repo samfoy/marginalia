@@ -18,7 +18,7 @@ Config via environment variables (all optional):
   MARGINALIA_PORT         TCP port to listen on           (default: 7731)
   MARGINALIA_AWS_PROFILE  AWS credentials profile          (default: "" — required for Bedrock)
   MARGINALIA_AWS_REGION   Bedrock region                   (default: us-west-2)
-  MARGINALIA_MODEL_ID     Model for /ask queries           (default: gpt-4o)
+  MARGINALIA_MODEL_ID     Primary model                    (default: openai:gpt-4o)
   MARGINALIA_TOKEN        Shared secret (empty = no auth)  (default: "")
   MARGINALIA_MAX_TOKENS   Max tokens for /ask responses    (default: 600)
   MARGINALIA_CALIBRE_DB   Path to Calibre library dir      (default: ~/Calibre Library)
@@ -58,7 +58,7 @@ import monitor
 PORT       = int(os.environ.get("MARGINALIA_PORT", 7731))
 PROFILE    = os.environ.get("MARGINALIA_AWS_PROFILE", "")
 # server.py uses Sonnet for /ask and knowledge-only X-Ray — never GPT (no Bedrock invoke_model support)
-MODEL_ID   = os.environ.get("MARGINALIA_MODEL_ID", "openai.gpt-5.5")
+MODEL_ID   = os.environ.get("MARGINALIA_MODEL_ID", "openai:gpt-4o")
 TOKEN      = os.environ.get("MARGINALIA_TOKEN", "")
 MAX_TOKENS = int(os.environ.get("MARGINALIA_MAX_TOKENS", 600))
 VAULT_ROOT = os.path.expanduser(os.environ.get("MARGINALIA_VAULT", "~/Documents"))
@@ -162,7 +162,7 @@ def ask_claude(text: str, context: str | None, book_title: str | None,
     parts.append(f"Selected text: {text}")
     user_message = "\n\n".join(parts)
 
-    # Model fallback chain (gpt-5.5 → gpt-5.4 → Sonnet) handles outages/empties.
+    # Model fallback chain handles provider outages automatically.
     raw = _complete(user_message, instructions=system,
                     reasoning_effort=COMPANION_EFFORT)
     return raw.strip()

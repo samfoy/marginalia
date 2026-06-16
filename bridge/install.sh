@@ -10,12 +10,35 @@
 set -euo pipefail
 
 BRIDGE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PLIST_TEMPLATE="$BRIDGE_DIR/com.sam.marginalia.plist"
+PLIST_TEMPLATE="$BRIDGE_DIR/com.marginalia.bridge.plist"
 LABEL="com.marginalia.bridge"
 PLIST_DST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_PATH="$HOME/Library/Logs/marginalia.log"
 
-# ── Python detection ──────────────────────────────────────────────────────────
+# ── Venv detection ───────────────────────────────────────────────────────────
+
+# If no venv is active, check if one exists in the repo root
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+    REPO_VENV="$BRIDGE_DIR/../.venv"
+    if [[ -f "$REPO_VENV/bin/python3" ]]; then
+        echo "Found .venv in repo — activating it."
+        source "$REPO_VENV/bin/activate"
+    else
+        # Check if marginalia is importable from the detected Python
+        if ! "$PYTHON" -c "import bridge.cli" 2>/dev/null && \
+           ! "$PYTHON" -m bridge.cli --help &>/dev/null 2>&1; then
+            echo ""
+            echo "⚠ Warning: 'marginalia' package not found in $PYTHON."
+            echo "  If you installed into a venv, activate it first:"
+            echo "    source .venv/bin/activate"
+            echo "  Then re-run this script."
+            echo "  Continuing anyway — edit the plist to use the correct Python path."
+            echo ""
+        fi
+    fi
+fi
+
+# ── Python detection ─────────────────────────────────────────────────────────────
 
 detect_python() {
     for candidate in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do

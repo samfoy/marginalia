@@ -12,7 +12,7 @@ marginalia saves reading notes — highlighted passages, AI answers, and your ow
 export MARGINALIA_VAULT=/path/to/your/obsidian/vault
 ```
 
-For a MacAgent LaunchAgent install, add to the plist's EnvironmentVariables section:
+For a **macOS LaunchAgent** install, add to the plist's EnvironmentVariables section:
 
 ```xml
 <key>MARGINALIA_VAULT</key>

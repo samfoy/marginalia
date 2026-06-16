@@ -35,7 +35,7 @@ PROFILE           = os.environ.get("MARGINALIA_AWS_PROFILE", "")
 REGION            = os.environ.get("MARGINALIA_AWS_REGION", "us-west-2")
 # Primary: GPT-5.5 via bedrock-mantle (richer extraction)
 # Fallback: Sonnet via direct Bedrock (reliable, spoiler-safe)
-MODEL_ID          = os.environ.get("MARGINALIA_MODEL_ID",          "openai.gpt-5.5")
+MODEL_ID          = os.environ.get("MARGINALIA_MODEL_ID",          "openai:gpt-4o")
 FALLBACK_MODEL_ID = os.environ.get("MARGINALIA_FALLBACK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 CHUNK_MODEL_ID    = os.environ.get("MARGINALIA_CHUNK_MODEL_ID",    MODEL_ID)
 

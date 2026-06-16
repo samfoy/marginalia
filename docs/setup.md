@@ -85,6 +85,8 @@ source .env          # macOS / Linux
 # Windows (PowerShell): Get-Content .env | ForEach-Object { $k,$v=$_.Split('=',2); [System.Environment]::SetEnvironmentVariable($k,$v,'Process') }
 ```
 
+> **Note:** `source .env` only applies to the current terminal session. For permanent configuration (auto-start service), use the LaunchAgent (`install.sh`) or systemd unit — they bake the env vars into the service definition.
+
 ---
 
 ## Step 3 — Start the bridge
@@ -204,9 +206,9 @@ cd bridge
 
 To manage it afterwards:
 ```bash
-launchctl stop  com.marginalia.bridge
-launchctl start com.marginalia.bridge
 tail -f ~/Library/Logs/marginalia.log
+launchctl stop  com.marginalia.bridge   # temporary pause (KeepAlive restarts it ~10s later)
+launchctl bootout gui/$(id -u)/com.marginalia.bridge   # permanent stop/remove
 ```
 
 ### Linux — systemd user service
