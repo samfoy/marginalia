@@ -29,6 +29,8 @@ Config via environment variables (all optional):
   MARGINALIA_MODEL_ID     Primary model                    (default: openai:gpt-4o)
   MARGINALIA_TOKEN        Shared secret (empty = no auth)  (default: "")
   MARGINALIA_MAX_TOKENS   Max tokens for /ask responses    (default: 600)
+  MARGINALIA_LOG_FILE      Log file path (default: ~/Library/Logs/marginalia.log on macOS,
+                           ~/.local/share/marginalia/marginalia.log on Linux)
   MARGINALIA_CALIBRE_DB   Path to Calibre library dir      (default: ~/Calibre Library)
   MARGINALIA_BOOKS_DIR   Vault subdirectory for book notes  (default: Notes/Books relative to vault)
   MARGINALIA_VAULT        Obsidian vault root              (default: ~/Documents)
@@ -951,7 +953,13 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def main():
-    log_file = os.path.expanduser("~/Library/Logs/marginalia.log")
+    import platform
+    _default_log = os.path.expanduser(
+        "~/Library/Logs/marginalia.log" if platform.system() == "Darwin"
+        else os.path.join(os.path.expanduser("~/.local/share/marginalia"), "marginalia.log")
+    )
+    log_file = os.environ.get("MARGINALIA_LOG_FILE", _default_log)
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",

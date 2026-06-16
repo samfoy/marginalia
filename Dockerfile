@@ -23,4 +23,4 @@ EXPOSE 7731
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -sf http://localhost:7731/ping || exit 1
 
-CMD ["python", "bridge/server.py"]
+CMD ["python", "-u", "bridge/server.py"]

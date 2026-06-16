@@ -34,6 +34,8 @@ services:
       # ── Optional ─────────────────────────────────────────────────────────────
       - MARGINALIA_PORT=7731
       - MARGINALIA_EMBED_BACKEND=${MARGINALIA_EMBED_BACKEND:-openai}
+      # Log to stdout so 'docker logs marginalia' works:
+      - MARGINALIA_LOG_FILE=/dev/stdout
       # - MARGINALIA_TOKEN=${MARGINALIA_TOKEN:-}
 
     volumes:
