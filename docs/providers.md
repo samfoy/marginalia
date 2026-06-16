@@ -29,7 +29,7 @@ export MARGINALIA_MODEL_ID=openai:gpt-4o
 |---|---|---|
 | Best quality | `openai:gpt-4o` | Recommended for Book Index generation |
 | Faster / cheaper | `openai:gpt-4o-mini` | Good for companion calls (recap, wiki, chat) |
-| Reasoning tasks | `openai:o3-mini` | Better on complex series questions |
+| Reasoning tasks | `openai:o4-mini` | Better on complex series questions |
 
 ### Fallback chain
 

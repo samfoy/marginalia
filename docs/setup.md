@@ -38,7 +38,7 @@ pip install -e ".[bedrock]"         # AWS Bedrock
 pip install -e ".[all]"             # everything
 ```
 
-> **Tip:** Add `source /path/to/marginalia/.venv/bin/activate` to your shell profile so `marginalia serve` is always available.
+> **Tip:** To run `marginalia serve` ad-hoc, activate the venv in that terminal session first: `source .venv/bin/activate`. For always-on use, set up the LaunchAgent or systemd service instead — they use the venv’s Python directly without needing the venv active in your shell.
 
 ### Windows
 
@@ -221,8 +221,11 @@ launchctl bootout gui/$(id -u)/com.marginalia.bridge   # permanent stop/remove
 ### Linux — systemd user service
 
 ```bash
-# Edit bridge/marginalia.service: update ExecStart path and Environment vars
+# Copy first, then edit — editing the repo file would conflict with git pull
+mkdir -p ~/.config/systemd/user
 cp bridge/marginalia.service ~/.config/systemd/user/
+# Edit the installed copy: update ExecStart (use your venv Python) and Environment vars
+${EDITOR:-nano} ~/.config/systemd/user/marginalia.service
 systemctl --user daemon-reload
 systemctl --user enable --now marginalia
 

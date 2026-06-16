@@ -251,7 +251,7 @@ The bridge is a plain stdlib `http.server` — no framework dependencies. All LL
 
 PRs welcome. Key areas:
 - **Ollama / local models** — add a `_invoke_ollama` path in `xray_generator.py`
-- **Streaming responses** — long-standing gap; the companion endpoints block until complete
+- **Streaming responses** — companion endpoints block until complete; requires a protocol change in the KOReader plugin
 - **Windows support** — the bridge is cross-platform; the LaunchAgent is macOS-specific
 - **Plugin distribution** — package as a `.zip` for KOReader's in-app plugin manager
 

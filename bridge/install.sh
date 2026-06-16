@@ -154,7 +154,7 @@ sed \
 
 # Uncomment and populate the API key in the installed plist (if collected)
 if [[ -n "${API_KEY_VAR:-}" || -n "${MODEL_DEFAULT:-}" ]]; then
-    python3 - "$PLIST_DST" "${API_KEY_VAR:-}" "${API_KEY_VAL:-}" "${MODEL_DEFAULT:-}" << 'PYEOF'
+    "$PYTHON" - "$PLIST_DST" "${API_KEY_VAR:-}" "${API_KEY_VAL:-}" "${MODEL_DEFAULT:-}" << 'PYEOF'
 import re, sys
 path, var, val, model = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else ''
 plist = open(path).read()
