@@ -328,4 +328,54 @@ function Bridge:sectionAsync(params, on_done, on_error)
     }, on_done, on_error)
 end
 
+--- Create a standalone Obsidian note from a chat response. Blocking (same
+-- reason as noteAsync: avoids fork/FD cross-talk with concurrent subprocesses).
+-- params: {title, body, book_title, book_author, reading_pct}
+-- on_done(resp_table) or on_error(err)
+function Bridge:noteNewAsync(params, on_done, on_error)
+    local body = {
+        title       = params.title,
+        body        = params.body,
+        book_title  = params.book_title,
+        book_author = params.book_author,
+        reading_pct = params.reading_pct,
+    }
+    if self.token and self.token ~= "" then body.token = self.token end
+    local body_json, enc_err = rapidjson.encode(body)
+    if not body_json then
+        if on_error then on_error("encode: " .. (enc_err or "?")) end
+        return
+    end
+    local sink = {}
+    socketutil:set_timeout(4, 7)
+    local ok, code = http.request({
+        url     = self:url("/note-new"),
+        method  = "POST",
+        source  = ltn12.source.string(body_json),
+        sink    = ltn12.sink.table(sink),
+        headers = {
+            ["Content-Type"]   = "application/json",
+            ["Content-Length"] = tostring(#body_json),
+        },
+    })
+    socketutil:reset_timeout()
+    if not ok then
+        if on_error then on_error("network: " .. tostring(code)) end
+        return
+    end
+    if code ~= 200 then
+        if on_error then on_error("HTTP " .. tostring(code)) end
+        return
+    end
+    local resp, derr = rapidjson.decode(table.concat(sink))
+    if not resp then
+        if on_error then on_error("decode: " .. (derr or "?")) end
+    elseif type(resp.error) == "string" and resp.error ~= "" then
+        if on_error then on_error(resp.error) end
+    else
+        logger.info("marginalia: standalone note saved", resp.path or "")
+        if on_done then on_done(resp) end
+    end
+end
+
 return Bridge

@@ -240,6 +240,29 @@ def _setup_vault(cfg: dict[str, str]) -> None:
     cfg["MARGINALIA_VAULT"] = vault
     _ok(f"Vault: {vault}")
 
+    # ── Subdirectory paths ────────────────────────────────────────────────
+    print(f"\n  {dim('Note folders (path relative to vault, or absolute):')}")
+
+    def _ask_subdir(label: str, env_key: str, default_rel: str) -> None:
+        cur = cfg.get(env_key, "")
+        # Show as a relative path when it's nested under the chosen vault.
+        if cur.startswith(vault + os.sep):
+            display = cur[len(vault) + 1:]
+        else:
+            display = cur or default_rel
+        val = _ask(label, display)
+        val = val.strip()
+        # Expand ~ for absolute paths; leave relative paths as-is (server resolves them).
+        if val.startswith("~"):
+            val = os.path.expanduser(val)
+        # Show the resolved absolute path so the user knows exactly where notes land.
+        resolved = val if os.path.isabs(val) else os.path.join(vault, val)
+        print(f"    {dim('→ ' + resolved)}")
+        cfg[env_key] = val
+
+    _ask_subdir("Book notes folder  ", "MARGINALIA_BOOKS_DIR",    "Notes/Books")
+    _ask_subdir("Standalone captures", "MARGINALIA_CAPTURES_DIR", "Notes/Captures")
+
 
 # ── Service install ───────────────────────────────────────────────────────────
 

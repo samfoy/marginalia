@@ -14,3 +14,4 @@ __pycache__/
 # Secrets
 *.plist.local
 marginalia.egg-info/
+.worktrees/

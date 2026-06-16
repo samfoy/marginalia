@@ -12,6 +12,7 @@ Routes:
   POST /wiki                       AI Wiki deep-dive on one entity
   POST /section                    chapter-by-chapter analysis
   POST /note                       save highlighted passage + context to Obsidian vault
+  POST /note-new                    create a standalone Obsidian note from a chat response
   POST /book-index/init            find book in Calibre, generate Book Index, cache it
   POST /book-index/progress        update reading position for a cached book
 
@@ -33,6 +34,7 @@ Config via environment variables (all optional):
                            ~/.local/share/marginalia/marginalia.log on Linux)
   MARGINALIA_CALIBRE_DB   Path to Calibre library dir      (default: ~/Calibre Library)
   MARGINALIA_BOOKS_DIR   Vault subdirectory for book notes  (default: Notes/Books relative to vault)
+  MARGINALIA_CAPTURES_DIR Vault subdirectory for standalone notes (default: Notes/Captures relative to vault)
   MARGINALIA_VAULT        Obsidian vault root              (default: ~/Documents)
   MARGINALIA_OPENAI_API_KEY    OpenAI API key for direct OpenAI models   (default: "")
   MARGINALIA_ANTHROPIC_API_KEY Anthropic API key for direct Anthropic    (default: "")
@@ -82,6 +84,9 @@ _default_books = os.path.join(VAULT_ROOT, "Notes", "Books")
 _books_raw = os.path.expanduser(os.environ.get("MARGINALIA_BOOKS_DIR", _default_books))
 # Resolve relative paths against VAULT_ROOT so Notes/Books works as documented
 BOOKS_DIR  = _books_raw if os.path.isabs(_books_raw) else os.path.join(VAULT_ROOT, _books_raw)
+_default_captures = os.path.join(VAULT_ROOT, "Notes", "Captures")
+_captures_raw = os.path.expanduser(os.environ.get("MARGINALIA_CAPTURES_DIR", _default_captures))
+CAPTURES_DIR = _captures_raw if os.path.isabs(_captures_raw) else os.path.join(VAULT_ROOT, _captures_raw)
 # Reasoning effort for interactive companion calls.
 COMPANION_EFFORT = os.environ.get("MARGINALIA_COMPANION_EFFORT", "low")
 
@@ -267,6 +272,69 @@ def _save_vault_note(
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
     logging.info("vault note: saved to %s", filepath)
+    return filepath
+
+
+# ── Standalone vault note creation ───────────────────────────────────────────
+
+def _create_standalone_note(
+    title: str, body: str,
+    book_title: str = "", book_author: str = "",
+    reading_pct: float = 0,
+) -> str:
+    """
+    Create a standalone Obsidian note from a chat response.
+    File: CAPTURES_DIR/<sanitised title>.md
+
+    On first write: creates the file with frontmatter + a wikilink back to the
+    book note.  On subsequent writes to the same title: appends a dated section
+    rather than overwriting, so the user can build up notes across sessions.
+    Returns the absolute path written.
+    """
+    from datetime import datetime
+
+    os.makedirs(CAPTURES_DIR, exist_ok=True)
+
+    def safe(s: str) -> str:
+        return re.sub(r'[\\/:*?"<>|]', '', s).strip()
+
+    filename = safe(title)[:100] + ".md"
+    filepath = os.path.join(CAPTURES_DIR, filename)
+
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    pct_str  = f" ({int(reading_pct)}%)" if reading_pct else ""
+
+    # Wikilink back to the book note (relative to BOOKS_DIR)
+    backlink = ""
+    if book_title:
+        link_base = (f"{safe(book_author)} - {safe(book_title)}"
+                     if book_author else safe(book_title))
+        backlink = f"[[{link_base}]]"
+
+    if os.path.exists(filepath):
+        # Append a dated section so repeated saves accumulate rather than overwrite.
+        with open(filepath, encoding="utf-8") as f:
+            content = f.read()
+        addition = f"\n\n---\n\n*{date_str}{pct_str}*\n\n{body.strip()}\n"
+        content = content.rstrip() + addition
+        logging.info("vault note-new: appended to %s", filepath)
+    else:
+        source_line = (f"\n> *{backlink}{pct_str}*\n" if backlink else "")
+        content = (
+            f"---\n"
+            f'title: "{title}"\n'
+            f"date: {date_str}\n"
+            + (f'source: "{book_title}"\n' if book_title else "")
+            + (f'author: "{book_author}"\n' if book_author else "")
+            + "tags:\n  - reading-capture\n---\n\n"
+            f"# {title}\n"
+            + source_line + "\n"
+            + body.strip() + "\n"
+        )
+        logging.info("vault note-new: created %s", filepath)
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
     return filepath
 
 
@@ -517,6 +585,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/note":
             self._handle_note()
+            return
+        if self.path == "/note-new":
+            self._handle_note_new()
             return
         if self.path == "/v1/chat/completions":
             self._handle_openai_compat()
@@ -926,6 +997,37 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             logging.exception("Note save error")
             self._send_json(500, {"ok": False, "error": str(exc)})
+
+    # ── /note-new — create a standalone Obsidian note ───────────────────────────
+    def _handle_note_new(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON"); return
+
+        title       = (req.get("title") or "").strip()
+        body        = (req.get("body") or "").strip()
+        book_title  = (req.get("book_title") or "").strip()
+        book_author = (req.get("book_author") or "").strip()
+        reading_pct = float(req.get("reading_pct") or 0)
+
+        if not title:
+            self.send_error(400, "Missing title"); return
+        if not body:
+            self.send_error(400, "Missing body"); return
+
+        try:
+            path = _create_standalone_note(
+                title=title, body=body,
+                book_title=book_title, book_author=book_author,
+                reading_pct=reading_pct,
+            )
+            self._send_json(200, {"ok": True, "path": path})
+        except Exception as exc:
+            logging.exception("/note-new error")
+            self._send_json(500, {"ok": False, "error": str(exc)})
+
 
     # ── /xray/progress ────────────────────────────────────────────────────────
     def _handle_xray_progress(self):

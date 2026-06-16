@@ -54,6 +54,7 @@ local DEFAULT_SETTINGS = {
     spoiler_free = true,    -- hide characters/events past reading position
     auto_capture = true,    -- on a successful Ask AI lookup, highlight the passage
                             -- (note = Pi's answer) and save it to the Obsidian note
+    auto_save_chat = false, -- automatically save every freeform chat Q&A to the vault
 }
 
 -- ── Settings ──────────────────────────────────────────────────────────────────
@@ -930,17 +931,155 @@ function PiRead:chatBridge(question, book_title, book_author, reading_pct)
         xray        = self._xray,
     }, function(response)
         close_loading()
+        local s = self:loadSettings()
+        -- Auto-save if the setting is on; otherwise show a manual Save button.
+        if s.auto_save_chat then
+            self:saveChatNote(question, response, book_title, book_author, reading_pct)
+        end
+        local btns = not s.auto_save_chat and { {
+            {
+                text     = _("Save as Note"),
+                callback = function()
+                    self:saveAsNote(question, response, book_title, book_author, reading_pct)
+                end,
+            },
+            {
+                text     = _("To Book Note"),
+                callback = function()
+                    self:saveChatNote(question, response, book_title, book_author, reading_pct)
+                end,
+            },
+        } } or nil
         UIManager:show(TextViewer:new{
-            title  = _("Marginalia"),
-            text   = response,
-            width  = math.floor(Screen:getWidth()  * 0.92),
-            height = math.floor(Screen:getHeight() * 0.78),
+            title               = _("Marginalia"),
+            text                = response,
+            width               = math.floor(Screen:getWidth()  * 0.92),
+            height              = math.floor(Screen:getHeight() * 0.78),
+            buttons_table       = btns,
+            add_default_buttons = true,
         })
     end, function(err)
         close_loading()
         logger.warn("marginalia chat:", err)
         UIManager:show(InfoMessage:new{ text = T(_("AI: %1"), err), timeout = 6 })
     end)
+end
+
+-- Save a freeform chat Q&A to the Obsidian vault (no highlighted passage).
+function PiRead:saveChatNote(question, response, book_title, book_author, reading_pct)
+    if not (book_title and book_title ~= "") then
+        UIManager:show(InfoMessage:new{
+            text    = _("No book open — can't save to vault."),
+            timeout = 3,
+        })
+        return
+    end
+    local note = {
+        query       = question,
+        response    = response,
+        source      = "Chat",
+        book_title  = (book_title ~= "") and book_title  or nil,
+        book_author = (book_author and book_author ~= "") and book_author or nil,
+        reading_pct = reading_pct,
+    }
+    Queue.enqueue(note)
+    if not NetworkMgr:isConnected() then
+        UIManager:show(InfoMessage:new{
+            text    = _("Saved — will sync to vault when online."),
+            timeout = 3,
+        })
+        return
+    end
+    local close_loading = self:showLoadingAnim(_("Saving to vault\xe2\x80\xa6"))
+    self:flushNoteQueue(function(sent, remaining)
+        close_loading()
+        if remaining > 0 then
+            UIManager:show(InfoMessage:new{
+                text    = T(_("Saved \xe2\x80\x94 %1 note(s) pending sync."), remaining),
+                timeout = 4,
+            })
+        else
+            UIManager:show(InfoMessage:new{
+                text    = _("Saved to vault."),
+                timeout = 3,
+            })
+        end
+    end)
+end
+
+
+-- Save a chat Q&A as a standalone Obsidian note in Notes/Captures/.
+-- Shows an InputDialog pre-filled with a derived title so the user can name it.
+function PiRead:saveAsNote(question, response, book_title, book_author, reading_pct)
+    if not (book_title and book_title ~= "") then
+        UIManager:show(InfoMessage:new{
+            text    = _("No book open — can't save to vault."),
+            timeout = 3,
+        })
+        return
+    end
+
+    -- Derive a suggested title by stripping common question prefixes.
+    local function deriveTitle(q)
+        local t = q
+            :gsub("^[Ww]hat'?s? +the +", "")
+            :gsub("^[Ww]hat +is +the? +", "")
+            :gsub("^[Ww]hat +are +the? +", "")
+            :gsub("^[Ww]hat +", "")
+            :gsub("^[Ll]ist +the? +", "")
+            :gsub("^[Tt]ell me about +the? +", "")
+            :gsub("[%?%.!%s]+$", "")
+        if #t > 0 then t = t:sub(1,1):upper() .. t:sub(2) end
+        if #t > 60 then t = t:sub(1, 57) .. "..." end
+        return (t ~= "") and t or q:sub(1, 60):gsub("[%?%.!]+$", "")
+    end
+
+    local InputDialog = require("ui/widget/inputdialog")
+    local dialog
+    dialog = InputDialog:new{
+        title       = _("Save as Note"),
+        input       = deriveTitle(question),
+        input_hint  = _("Note title"),
+        input_type  = "text",
+        buttons = {{
+            {
+                text     = _("Cancel"),
+                id       = "close",
+                callback = function() UIManager:close(dialog) end,
+            },
+            {
+                text             = _("Save"),
+                is_enter_default = true,
+                callback         = function()
+                    local title = dialog:getInputText()
+                    if not title or title:match("^%s*$") then return end
+                    UIManager:close(dialog)
+                    local close_loading = self:showLoadingAnim(_("Saving note…"))
+                    Bridge:noteNewAsync({
+                        title       = title,
+                        body        = response,
+                        book_title  = book_title,
+                        book_author = book_author,
+                        reading_pct = reading_pct,
+                    }, function(resp)
+                        close_loading()
+                        local fname = (resp.path or ""):match("[^/\\]+%.md$") or title
+                        UIManager:show(InfoMessage:new{
+                            text    = T(_("Saved: %1"), fname),
+                            timeout = 4,
+                        })
+                    end, function(err)
+                        close_loading()
+                        UIManager:show(InfoMessage:new{
+                            text    = T(_("Save failed: %1"), err),
+                            timeout = 5,
+                        })
+                    end)
+                end,
+            },
+        }},
+    }
+    UIManager:show(dialog)
 end
 
 
@@ -1055,6 +1194,20 @@ function PiRead:buildMenu()
         end,
         help_text = _("When on, a successful Ask AI lookup highlights the passage "
             .. "(note = Pi's answer) and saves the passage + answer to the book's Obsidian note."),
+    })
+
+    -- Auto-save chat Q&As to vault
+    table.insert(items, {
+        text_func = function()
+            return T(_("Auto-save chat to vault: %1"), self:loadSettings().auto_save_chat and _("on") or _("off"))
+        end,
+        checked_func = function() return self:loadSettings().auto_save_chat end,
+        callback = function()
+            local s = self:loadSettings(); s.auto_save_chat = not s.auto_save_chat; self:saveSettings(s)
+        end,
+        help_text = _("When on, every freeform Ask AI response is automatically saved "
+            .. "to the book's Obsidian vault note. When off, a Save to Vault button "
+            .. "appears in each response."),
     })
 
     -- Bridge host

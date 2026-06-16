@@ -25,11 +25,16 @@ classifiers = [
 # Only numpy is unconditionally required; all LLM/embedding deps are optional
 dependencies = ["numpy"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"
+
 [project.optional-dependencies]
 openai    = ["openai>=1.0"]
 anthropic = ["anthropic>=0.20"]
 bedrock   = ["boto3>=1.28", "botocore>=1.31"]
 embed     = ["sentence-transformers>=2.0"]
+dev       = ["pytest>=8.0"]
 all       = [
     "marginalia[openai,anthropic,bedrock,embed]",
 ]
