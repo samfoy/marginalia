@@ -1,18 +1,28 @@
 """
-book_finder.py — Locate EPUBs in the Calibre library by title and author.
+book_finder.py — Locate EPUBs by title and author.
 
-Directory structure: Author Name/Title (calibre_id)/Title - Author Name.epub
-Also reads metadata.opf for series info (more reliable than the EPUB-internal OPF).
+Searches two library layouts (in order):
+
+  1. Flat layout (BookOrbit / kindle-books): ~/kindle-books/Author Name - Title.epub
+     Configured via MARGINALIA_EPUB_DIR (default: ~/kindle-books).
+
+  2. Calibre layout (legacy): ~/Calibre Library/Author Name/Title (id)/file.epub
+     Configured via MARGINALIA_CALIBRE_DB (default: ~/Calibre Library).
+     Only used if the flat layout finds no match.
 """
 
 import logging
 import os
 import re
+import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
+EPUB_DIR = Path(os.path.expanduser(
+    os.environ.get("MARGINALIA_EPUB_DIR", "~/kindle-books")
+))
 CALIBRE_LIB = Path(os.path.expanduser(
     os.environ.get("MARGINALIA_CALIBRE_DB", "~/Calibre Library")
 ))
@@ -23,6 +33,10 @@ _ARTICLES = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 _SUBTITLE  = re.compile(r"[\:—\u2014].*$")
 # Non-word chars
 _NONWORD   = re.compile(r"[^\w\s]")
+# Series annotation in flat filenames: "Iron Gold (Red Rising #4)" → series="Red Rising", idx=4
+_SERIES_PAREN = re.compile(r"\(([^)]+?)\s*#\s*(\d+(?:\.\d+)?)\)\s*$")
+# File variants to skip (bionic reader, etc.)
+_SKIP_SUFFIXES = (".bionic.epub",)
 
 
 def _norm_title(t: str) -> str:
@@ -61,7 +75,6 @@ def _author_score(a: str, b: str) -> float:
         return 0.0
     if a == b:
         return 1.0
-    # Last-name match is a strong signal
     la = a.split()[-1] if a.split() else ""
     lb = b.split()[-1] if b.split() else ""
     if la and la == lb:
@@ -72,9 +85,156 @@ def _author_score(a: str, b: str) -> float:
     return len(ta & tb) / max(len(ta), len(tb))
 
 
+# ── Flat layout helpers ────────────────────────────────────────────────────────
+
+def _read_epub_series(epub_path: str) -> dict:
+    """
+    Read calibre:series / calibre:series_index from inside the EPUB's OPF.
+    Returns {} on any error (non-blocking).
+    """
+    try:
+        with zipfile.ZipFile(epub_path) as z:
+            # Locate OPF via META-INF/container.xml
+            opf_path = None
+            try:
+                container = ET.parse(z.open("META-INF/container.xml"))
+                opf_path = container.find(
+                    ".//{urn:oasis:names:tc:opendocument:xmlns:container}rootfile"
+                ).get("full-path")
+            except Exception:
+                for name in z.namelist():
+                    if name.endswith(".opf"):
+                        opf_path = name
+                        break
+            if not opf_path:
+                return {}
+
+            tree = ET.parse(z.open(opf_path))
+            ns = {"opf": "http://www.idpf.org/2007/opf"}
+            series = series_index = None
+            for meta in tree.findall(".//opf:meta", ns):
+                name    = meta.get("name", "")
+                content = meta.get("content", "")
+                # EPUB2 / Calibre style
+                if name == "calibre:series":
+                    series = content
+                elif name == "calibre:series_index":
+                    try:
+                        series_index = int(float(content))
+                    except (ValueError, TypeError):
+                        pass
+                # EPUB3 belongs-to-collection style
+                if meta.get("property") == "belongs-to-collection":
+                    series = meta.text
+                if meta.get("property") == "group-position":
+                    try:
+                        series_index = int(float(meta.text or ""))
+                    except (ValueError, TypeError):
+                        pass
+            return {"series": series, "series_index": series_index}
+    except Exception as e:
+        logger.debug("epub series read failed for %s: %s", epub_path, e)
+        return {}
+
+
+def _parse_flat_filename(stem: str) -> dict:
+    """
+    Parse 'Author Name - Title (Series #N)' → {author, title, series, series_index}.
+    Returns {} if the filename doesn't match the expected ' - ' separator pattern.
+    """
+    if " - " not in stem:
+        return {}
+    author_part, title_part = stem.split(" - ", 1)
+
+    series = series_index = None
+    m = _SERIES_PAREN.search(title_part)
+    if m:
+        series       = m.group(1).strip()
+        try:
+            series_index = int(float(m.group(2)))
+        except (ValueError, TypeError):
+            pass
+        title_part = title_part[:m.start()].strip()
+
+    return {
+        "author":       author_part.strip(),
+        "title":        title_part.strip(),
+        "series":       series,
+        "series_index": series_index,
+    }
+
+
+def _scan_flat(epub_dir: Path) -> list[dict]:
+    """
+    Yield candidate dicts for every EPUB in epub_dir (non-recursive).
+    Each dict: epub_path, author, title, series, series_index, calibre_id=None.
+    """
+    if not epub_dir.is_dir():
+        return []
+    candidates = []
+    for p in epub_dir.iterdir():
+        if not p.is_file():
+            continue
+        # Skip known variant suffixes
+        if any(p.name.endswith(s) for s in _SKIP_SUFFIXES):
+            continue
+        if p.suffix.lower() != ".epub":
+            continue
+        parsed = _parse_flat_filename(p.stem)
+        if not parsed:
+            continue
+        candidates.append({
+            "epub_path":    str(p),
+            "calibre_id":   None,
+            "title":        parsed["title"],
+            "author":       parsed["author"],
+            "series":       parsed["series"],
+            "series_index": parsed["series_index"],
+        })
+    return candidates
+
+
+def _find_epub_flat(title: str, author: str = "",
+                    epub_dir: Path = EPUB_DIR) -> dict | None:
+    """Find best match in the flat BookOrbit library."""
+    norm_t = _norm_title(title)
+    norm_a = _norm_author(author) if author else ""
+    best: tuple[float, dict] | None = None
+
+    for c in _scan_flat(epub_dir):
+        ts = _title_score(norm_t, _norm_title(c["title"]))
+        if ts < 0.5:
+            continue
+        author_weight = 0.35 if norm_a else 0.0
+        title_weight  = 1.0 - author_weight
+        as_ = _author_score(norm_a, _norm_author(c["author"])) if norm_a else 0.0
+        score = ts * title_weight + as_ * author_weight
+        if score < 0.55:
+            continue
+        if best is None or score > best[0]:
+            best = (score, c)
+
+    if best and best[0] >= 0.60:
+        c = best[1]
+        # Enrich series from EPUB-internal OPF if filename didn't supply it
+        if c["series"] is None:
+            epub_meta = _read_epub_series(c["epub_path"])
+            c["series"]       = epub_meta.get("series")
+            c["series_index"] = epub_meta.get("series_index")
+        logger.info(
+            "book_finder(flat): matched '%s' by '%s' (score=%.2f)",
+            c["title"], c["author"], best[0],
+        )
+        return {**c, "score": round(best[0], 3)}
+
+    return None
+
+
+# ── Calibre layout helpers (legacy) ───────────────────────────────────────────
+
 def _read_calibre_metadata(book_dir: Path) -> dict:
     """
-    Read series/index from Calibre's metadata.opf (more reliable than EPUB-internal).
+    Read series/index from Calibre's metadata.opf.
     Returns {} if not found.
     """
     opf = book_dir / "metadata.opf"
@@ -95,10 +255,11 @@ def _read_calibre_metadata(book_dir: Path) -> dict:
                     series_index = int(float(content))
                 except (ValueError, TypeError):
                     pass
-        # Also grab title and author from dc: elements in case we need them
+
         def dc(tag):
             el = tree.find(f".//dc:{tag}", ns)
             return el.text.strip() if el is not None and el.text else ""
+
         return {
             "series":       series,
             "series_index": series_index,
@@ -110,58 +271,39 @@ def _read_calibre_metadata(book_dir: Path) -> dict:
         return {}
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
-
-def find_epub(title: str, author: str = "",
-              calibre_lib: Path = CALIBRE_LIB) -> dict | None:
-    """
-    Find the best-matching book in CalibreLibrary.
-
-    Returns a dict with:
-      epub_path, calibre_id, title, author, series, series_index
-    or None if no match with score ≥ 0.60.
-    """
+def _find_epub_calibre(title: str, author: str = "",
+                       calibre_lib: Path = CALIBRE_LIB) -> dict | None:
+    """Find best match in a Calibre-layout library."""
+    if not calibre_lib.is_dir():
+        return None
     norm_t = _norm_title(title)
     norm_a = _norm_author(author) if author else ""
-
     best: tuple[float, dict] | None = None
 
     for author_dir in calibre_lib.iterdir():
         if not author_dir.is_dir() or author_dir.name.startswith("."):
             continue
-
         dir_author_score = _author_score(norm_a, _norm_author(author_dir.name))
-        # Skip author dirs that can't possibly match (saves time on big libraries)
         if norm_a and dir_author_score < 0.4:
             continue
 
         for book_dir in author_dir.iterdir():
             if not book_dir.is_dir():
                 continue
-
-            # Parse "Title (id)" format
             m = re.match(r"^(.*?)\s*\((\d+)\)$", book_dir.name)
             if not m:
                 continue
-
-            dir_title = _norm_title(m.group(1))
+            dir_title  = _norm_title(m.group(1))
             calibre_id = int(m.group(2))
-
             ts = _title_score(norm_t, dir_title)
-            # Author weight lower when no author provided
             author_weight = 0.35 if norm_a else 0.0
-            title_weight  = 1.0 - author_weight
-            score = ts * title_weight + dir_author_score * author_weight
-
+            score = ts * (1.0 - author_weight) + dir_author_score * author_weight
             if score < 0.55:
                 continue
-
             epub_files = list(book_dir.glob("*.epub"))
             if not epub_files:
                 continue
-
             meta = _read_calibre_metadata(book_dir)
-
             candidate = {
                 "epub_path":    str(epub_files[0]),
                 "calibre_id":   calibre_id,
@@ -171,79 +313,123 @@ def find_epub(title: str, author: str = "",
                 "series_index": meta.get("series_index"),
                 "score":        round(score, 3),
             }
-
             if best is None or score > best[0]:
                 best = (score, candidate)
 
     if best and best[0] >= 0.60:
         logger.info(
-            "book_finder: matched '%s' by '%s' (score=%.2f, id=%d)",
-            best[1]["title"], best[1]["author"], best[0], best[1]["calibre_id"]
+            "book_finder(calibre): matched '%s' by '%s' (score=%.2f, id=%d)",
+            best[1]["title"], best[1]["author"], best[0], best[1]["calibre_id"],
         )
         return best[1]
-
-    logger.info("book_finder: no match for '%s' / '%s'", title, author)
     return None
 
 
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+def find_epub(title: str, author: str = "",
+              calibre_lib: Path = CALIBRE_LIB,
+              epub_dir: Path = EPUB_DIR) -> dict | None:
+    """
+    Find the best-matching EPUB by title/author.
+
+    Tries the flat BookOrbit library first, then falls back to the Calibre layout.
+    Returns a dict with epub_path, calibre_id, title, author, series, series_index,
+    or None if no match scores ≥ 0.60.
+    """
+    result = _find_epub_flat(title, author, epub_dir)
+    if result:
+        return result
+    return _find_epub_calibre(title, author, calibre_lib)
+
+
 def get_series_books(series_name: str,
-                     calibre_lib: Path = CALIBRE_LIB) -> list[dict]:
+                     calibre_lib: Path = CALIBRE_LIB,
+                     epub_dir: Path = EPUB_DIR) -> list[dict]:
     """
     Return all books in a named series, sorted by series_index.
-    Used for pre-generating full series X-Ray.
+    Searches flat library first, then Calibre.
     """
     norm = series_name.lower().strip()
     results = []
+    seen: set[str] = set()
 
-    for author_dir in calibre_lib.iterdir():
-        if not author_dir.is_dir():
+    # Flat library
+    for c in _scan_flat(epub_dir):
+        series = c["series"]
+        if not series:
+            meta = _read_epub_series(c["epub_path"])
+            series        = meta.get("series")
+            c["series"]       = series
+            c["series_index"] = meta.get("series_index")
+        if not series or series.lower().strip() != norm:
             continue
-        for book_dir in author_dir.iterdir():
-            if not book_dir.is_dir():
+        if c["epub_path"] not in seen:
+            seen.add(c["epub_path"])
+            results.append(c)
+
+    # Calibre library (fill in any gaps)
+    if calibre_lib.is_dir():
+        for author_dir in calibre_lib.iterdir():
+            if not author_dir.is_dir():
                 continue
-            meta = _read_calibre_metadata(book_dir)
-            if not meta.get("series"):
-                continue
-            if meta["series"].lower().strip() != norm:
-                continue
-            epub_files = list(book_dir.glob("*.epub"))
-            if not epub_files:
-                continue
-            m = re.match(r"^(.*?)\s*\((\d+)\)$", book_dir.name)
-            results.append({
-                "epub_path":    str(epub_files[0]),
-                "calibre_id":   int(m.group(2)) if m else 0,
-                "title":        meta.get("title", book_dir.name),
-                "author":       meta.get("author", author_dir.name),
-                "series":       meta["series"],
-                "series_index": meta.get("series_index", 0),
-            })
+            for book_dir in author_dir.iterdir():
+                if not book_dir.is_dir():
+                    continue
+                meta = _read_calibre_metadata(book_dir)
+                if not meta.get("series") or meta["series"].lower().strip() != norm:
+                    continue
+                epub_files = list(book_dir.glob("*.epub"))
+                if not epub_files or str(epub_files[0]) in seen:
+                    continue
+                m = re.match(r"^(.*?)\s*\((\d+)\)$", book_dir.name)
+                seen.add(str(epub_files[0]))
+                results.append({
+                    "epub_path":    str(epub_files[0]),
+                    "calibre_id":   int(m.group(2)) if m else 0,
+                    "title":        meta.get("title", book_dir.name),
+                    "author":       meta.get("author", author_dir.name),
+                    "series":       meta["series"],
+                    "series_index": meta.get("series_index", 0),
+                })
 
     return sorted(results, key=lambda b: (b.get("series_index") or 0))
 
 
-def list_all(calibre_lib: Path = CALIBRE_LIB) -> list[dict]:
-    """Return every book in the library (for index building / pi chat queries)."""
+def list_all(calibre_lib: Path = CALIBRE_LIB,
+             epub_dir: Path = EPUB_DIR) -> list[dict]:
+    """Return every book across both libraries (for index building / pi chat queries)."""
     results = []
-    for author_dir in calibre_lib.iterdir():
-        if not author_dir.is_dir() or author_dir.name.startswith("."):
-            continue
-        for book_dir in author_dir.iterdir():
-            if not book_dir.is_dir():
+    seen: set[str] = set()
+
+    # Flat library
+    for c in _scan_flat(epub_dir):
+        seen.add(c["epub_path"])
+        results.append(c)
+
+    # Calibre library
+    if calibre_lib.is_dir():
+        for author_dir in calibre_lib.iterdir():
+            if not author_dir.is_dir() or author_dir.name.startswith("."):
                 continue
-            m = re.match(r"^(.*?)\s*\((\d+)\)$", book_dir.name)
-            if not m:
-                continue
-            epub_files = list(book_dir.glob("*.epub"))
-            if not epub_files:
-                continue
-            meta = _read_calibre_metadata(book_dir)
-            results.append({
-                "epub_path":    str(epub_files[0]),
-                "calibre_id":   int(m.group(2)),
-                "title":        meta.get("title") or m.group(1).strip(),
-                "author":       meta.get("author") or author_dir.name,
-                "series":       meta.get("series"),
-                "series_index": meta.get("series_index"),
-            })
+            for book_dir in author_dir.iterdir():
+                if not book_dir.is_dir():
+                    continue
+                m = re.match(r"^(.*?)\s*\((\d+)\)$", book_dir.name)
+                if not m:
+                    continue
+                epub_files = list(book_dir.glob("*.epub"))
+                if not epub_files or str(epub_files[0]) in seen:
+                    continue
+                meta = _read_calibre_metadata(book_dir)
+                seen.add(str(epub_files[0]))
+                results.append({
+                    "epub_path":    str(epub_files[0]),
+                    "calibre_id":   int(m.group(2)),
+                    "title":        meta.get("title") or m.group(1).strip(),
+                    "author":       meta.get("author") or author_dir.name,
+                    "series":       meta.get("series"),
+                    "series_index": meta.get("series_index"),
+                })
+
     return sorted(results, key=lambda b: (b["author"].lower(), b["title"].lower()))

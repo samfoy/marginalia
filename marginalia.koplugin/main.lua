@@ -155,7 +155,7 @@ function PiRead:onMarginaliaReadXRay()
         UIManager:show(InfoMessage:new{
             text    = self._xray_job_id
                         and _("Book Index is being generated. Try again in a minute.")
-                        or  _("No Book Index data. Open a book that's in your Calibre library."),
+                        or  _("No Book Index data. Open a book that's in your library."),
             timeout = 4,
         })
         return true
@@ -1169,7 +1169,7 @@ function PiRead:buildMenu()
                 UIManager:show(InfoMessage:new{
                     text    = self._xray_job_id
                                 and _("Book Index is being generated. Try again in a minute.")
-                                or  _("No Book Index data. Open a book that's in your Calibre library."),
+                                or  _("No Book Index data. Open a book that's in your library."),
                     timeout = 5,
                 })
                 return
