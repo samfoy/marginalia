@@ -35,6 +35,7 @@ local PiRead = WidgetContainer:extend{
     name = "marginalia",
     -- Populated on init:
     _xray        = nil,    -- current book's X-Ray data (table)
+    _xray_loading = false, -- true while async /book-index/init is in flight
     _book_hash   = nil,    -- epub hash (from bridge)
     _book_meta   = nil,    -- {title, author, series, ...}
     _mentions    = nil,    -- per-entity chapter mention index {name_lower: [{chapter,position_pct,snippet}]}
@@ -127,7 +128,7 @@ function PiRead:onMarginaliaReadNowReading()
     if not s.enabled then return end
     local pct = s.spoiler_free and self:currentReadingPct() or nil
     XRayUI.setContext(self:_xrayContext())
-    Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end)
+    Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end, self._xray_loading)
 end
 
 function PiRead:onMarginaliaReadRecap()
@@ -342,15 +343,21 @@ end
 
 function PiRead:requestXRay(title, author, reading_pct)
     logger.info("marginalia: requesting Book Index for", title)
+    self._xray_loading = true
     Bridge:xrayInitAsync({
         book_title  = title,
         book_author = author,
         reading_pct = reading_pct or 0,
     }, function(resp)
+        self._xray_loading = false
         if not resp then return end
         if resp.status == "ready" then
             logger.info("marginalia: Book Index ready (cached=%s)", tostring(resp.cached))
             self:_storeXRay(resp)
+            UIManager:show(InfoMessage:new{
+                text    = _("Book Index ready!"),
+                timeout = 3,
+            })
         elseif resp.status == "generating" then
             logger.info("marginalia: Book Index generating, job_id=%s", tostring(resp.job_id))
             self._xray_job_id = resp.job_id
@@ -394,6 +401,7 @@ function PiRead:requestXRay(title, author, reading_pct)
             end)
         end
     end, function(err)
+        self._xray_loading = false
         logger.warn("marginalia: /book-index/init error:", err)
     end)
 end
@@ -1140,7 +1148,7 @@ function PiRead:buildMenu()
             end
             local pct = s.spoiler_free and self:currentReadingPct() or nil
             XRayUI.setContext(self:_xrayContext())
-            Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end)
+            Context.show(self.ui, self._xray, Bridge, pct, function() self:showChatDialog() end, self._xray_loading)
         end,
     })
 
@@ -1269,8 +1277,9 @@ function PiRead:buildMenu()
             if title == "" then return end
             -- Clear local cache
             if self._book_hash then Cache.deleteXray(self._book_hash) end
-            self._xray      = nil
-            self._book_hash = nil
+            self._xray         = nil
+            self._xray_loading = false
+            self._book_hash    = nil
             if not NetworkMgr:isConnected() then
                 UIManager:show(InfoMessage:new{ text = _("Not connected to network."), timeout = 3 })
                 return

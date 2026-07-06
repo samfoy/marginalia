@@ -230,7 +230,7 @@ local function section_items(title, entities, kind, reading_pct)
 end
 
 
-function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform)
+function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform, is_loading)
     -- Extract current chapter text
     local text, chapter_title, chapter_pct = Context.getCurrentChapterText(ui)
 
@@ -243,8 +243,11 @@ function Context.show(ui, xray, bridge, reading_pct, on_ask_freeform)
     end
 
     if not xray then
+        local msg = is_loading
+            and _("Book Index is loading — try again in a moment.")
+            or  _("Book Index not ready. Open the book first to generate it.")
         UIManager:show(InfoMessage:new{
-            text    = _("Book Index not ready. Still building it — try again in a minute."),
+            text    = msg,
             timeout = 5,
         })
         return

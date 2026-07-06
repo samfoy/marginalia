@@ -141,15 +141,36 @@ function Cache.updateIndex(book_hash, data)
     Cache.saveIndex(idx)
 end
 
---- Find cached book by title (case-insensitive). Returns full record or nil.
+--- Find cached book by title (case-insensitive, prefix-aware). Returns full record or nil.
+-- Handles EPUBs whose metadata title is shorter than the cached title, e.g.
+-- EPUB: "Dark Age" vs cached: "Dark Age (Red Rising Series Book 5)".
+-- Mirrors the server-side find_by_title_author logic.
 function Cache.findByTitle(title)
     if not title then return nil end
     local tl = title:lower():gsub("^%s+", ""):gsub("%s+$", "")
     local idx = Cache.loadIndex()
+    local best_hash, best_len = nil, nil
     for hash, meta in pairs(idx.books or {}) do
-        if (meta.title or ""):lower() == tl then
+        local ct = (meta.title or ""):lower()
+        -- Exact match (always wins)
+        if ct == tl then
             return Cache.loadXray(hash), hash
         end
+        -- Prefix match: cached title starts with query title + separator
+        -- e.g. "dark age" matches "dark age (red rising series book 5)"
+        if ct:sub(1, #tl) == tl and #ct > #tl then
+            local sep = ct:sub(#tl + 1, #tl + 1)
+            if sep == " " or sep == ":" or sep == "-" or sep == "(" then
+                -- Prefer shortest match (most specific)
+                if best_len == nil or #ct < best_len then
+                    best_hash = hash
+                    best_len  = #ct
+                end
+            end
+        end
+    end
+    if best_hash then
+        return Cache.loadXray(best_hash), best_hash
     end
     return nil, nil
 end
