@@ -56,8 +56,7 @@ MODEL_CHAIN_ENV  = os.environ.get("MARGINALIA_MODEL_CHAIN", "")
 MODEL_COOLDOWN_S = float(os.environ.get("MARGINALIA_MODEL_COOLDOWN_S", "120"))
 _model_failures: dict[str, float] = {}
 _failures_lock   = threading.Lock()
-MAX_TOKENS        = int(os.environ.get("MARGINALIA_XRAY_MAX_TOKENS",
-                        os.environ.get("MARGINALIA_MAX_TOKENS", "16384")))
+MAX_TOKENS        = int(os.environ.get("MARGINALIA_XRAY_MAX_TOKENS", "16384"))
 MAX_PARALLEL_CHUNKS = int(os.environ.get("MARGINALIA_MAX_PARALLEL_CHUNKS", "4"))
 
 # GPT-5.5 context: 272K tokens ≈ 1.1M chars. Keep headroom for prompt overhead.
