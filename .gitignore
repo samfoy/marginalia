@@ -12,6 +12,11 @@ __pycache__/
 *.json.bak
 
 # Secrets
+.env
+docker-compose.override.yml
 *.plist.local
 marginalia.egg-info/
 .worktrees/
+
+# Server-specific setup notes (not for the public repo)
+SETUP_NOTES.md

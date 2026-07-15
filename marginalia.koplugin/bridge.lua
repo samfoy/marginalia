@@ -21,6 +21,8 @@ local Bridge = {
     host          = "macbook.local",
     port          = 7731,
     token         = "",
+    base_url      = "",   -- optional full base URL (e.g. https://samfp.tech/marginalia);
+                          -- overrides host/port when set. Enables HTTPS + reverse-proxy subpaths.
     TIMEOUT_BLOCK = 20,
     TIMEOUT_TOTAL = 25,
     PING_BLOCK    = 3,
@@ -28,7 +30,24 @@ local Bridge = {
 }
 
 function Bridge:url(path)
+    -- When a base_url is configured (HTTPS reverse proxy / subpath mount), build
+    -- from it and strip any trailing slash so "<base>" + "/ask" is well-formed.
+    if self.base_url and self.base_url ~= "" then
+        local base = self.base_url:gsub("/+$", "")
+        return base .. path
+    end
     return string.format("http://%s:%d%s", self.host, self.port, path)
+end
+
+--- Auth headers sent on EVERY request so an edge proxy (Caddy) can enforce the
+--- token across all endpoints — not just the ones the bridge itself checks.
+--- Returns a fresh table each call (safe to mutate by callers).
+function Bridge:authHeaders()
+    local h = {}
+    if self.token and self.token ~= "" then
+        h["X-Marginalia-Token"] = self.token
+    end
+    return h
 end
 
 -- ── Low-level HTTP ─────────────────────────────────────────────────────────────
@@ -39,6 +58,7 @@ function Bridge:_get(path, block_t, total_t)
     local ok, code = http.request({
         url    = self:url(path),
         method = "GET",
+        headers = self:authHeaders(),
         sink   = ltn12.sink.table(sink),
     })
     socketutil:reset_timeout()
@@ -69,8 +89,9 @@ function Bridge:_post(path, params)
         source  = ltn12.source.string(body_json),
         sink    = ltn12.sink.table(sink),
         headers = {
-            ["Content-Type"]   = "application/json",
-            ["Content-Length"] = tostring(#body_json),
+            ["Content-Type"]        = "application/json",
+            ["Content-Length"]      = tostring(#body_json),
+            ["X-Marginalia-Token"]  = (self.token ~= "" and self.token) or nil,
         },
     })
     socketutil:reset_timeout()
@@ -92,7 +113,11 @@ end
 --- Quick reachability check.
 function Bridge:ping()
     socketutil:set_timeout(self.PING_BLOCK, self.PING_TOTAL)
-    local ok, code = http.request(self:url("/ping"))
+    local ok, code = http.request({
+        url     = self:url("/ping"),
+        method  = "GET",
+        headers = self:authHeaders(),
+    })
     socketutil:reset_timeout()
     return ok ~= nil and code == 200
 end
@@ -171,7 +196,8 @@ end
 --- Async X-Ray init — non-blocking. Calls on_done(full_response_table) or on_error(err).
 -- Used on book open so a slow/flaky network never freezes the UI thread.
 function Bridge:xrayInitAsync(params, on_done, on_error)
-    return Async.post(self:url("/book-index/init"), params, on_done, on_error, { raw = true })
+    return Async.post(self:url("/book-index/init"), params, on_done, on_error,
+        { raw = true, headers = self:authHeaders() })
 end
 
 --- Stream the device's open EPUB to the bridge for Book Index generation.
@@ -214,7 +240,7 @@ end
 
 --- Async ask — returns cancel(). Calls on_done(text) or on_error(err).
 function Bridge:askAsync(params, on_done, on_error)
-    return Async.post(self:url("/ask"), params, on_done, on_error)
+    return Async.post(self:url("/ask"), params, on_done, on_error, { headers = self:authHeaders() })
 end
 
 --- Async chat — returns cancel(). Calls on_done(text) or on_error(err).
@@ -258,7 +284,7 @@ function Bridge:chatAsync(params, on_done, on_error)
         xray_summary = xray_summary,
         page_text    = params.page_text,
     }
-    return Async.post(self:url("/chat"), payload, on_done, on_error)
+    return Async.post(self:url("/chat"), payload, on_done, on_error, { headers = self:authHeaders() })
 end
 
 --- Save-to-vault — POST /note. Calls on_done(resp_table) or on_error(err).
@@ -294,8 +320,9 @@ function Bridge:noteAsync(params, on_done, on_error)
         source  = ltn12.source.string(body_json),
         sink    = ltn12.sink.table(sink),
         headers = {
-            ["Content-Type"]   = "application/json",
-            ["Content-Length"] = tostring(#body_json),
+            ["Content-Type"]        = "application/json",
+            ["Content-Length"]      = tostring(#body_json),
+            ["X-Marginalia-Token"]  = (self.token ~= "" and self.token) or nil,
         },
     })
     socketutil:reset_timeout()
@@ -324,7 +351,7 @@ function Bridge:recapAsync(params, on_done, on_error)
         book_title  = params.book_title,
         book_author = params.book_author,
         reading_pct = params.reading_pct,
-    }, on_done, on_error)
+    }, on_done, on_error, { headers = self:authHeaders() })
 end
 
 --- Async AI Wiki deep-dive on one entity (spoiler-bounded). on_done(text)/on_error(err).
@@ -336,7 +363,7 @@ function Bridge:wikiAsync(params, on_done, on_error)
         entity_kind = params.entity_kind,
         known       = params.known,
         reading_pct = params.reading_pct,
-    }, on_done, on_error)
+    }, on_done, on_error, { headers = self:authHeaders() })
 end
 
 --- Async Section X-Ray for one chapter/part. on_done(text)/on_error(err).
@@ -347,7 +374,7 @@ function Bridge:sectionAsync(params, on_done, on_error)
         chapter_title = params.chapter_title,
         start_pct     = params.start_pct,
         end_pct       = params.end_pct,
-    }, on_done, on_error)
+    }, on_done, on_error, { headers = self:authHeaders() })
 end
 
 --- Create a standalone Obsidian note from a chat response. Blocking (same
@@ -376,8 +403,9 @@ function Bridge:noteNewAsync(params, on_done, on_error)
         source  = ltn12.source.string(body_json),
         sink    = ltn12.sink.table(sink),
         headers = {
-            ["Content-Type"]   = "application/json",
-            ["Content-Length"] = tostring(#body_json),
+            ["Content-Type"]        = "application/json",
+            ["Content-Length"]      = tostring(#body_json),
+            ["X-Marginalia-Token"]  = (self.token ~= "" and self.token) or nil,
         },
     })
     socketutil:reset_timeout()

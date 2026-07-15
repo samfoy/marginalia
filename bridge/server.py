@@ -559,13 +559,32 @@ class Handler(BaseHTTPRequestHandler):
         self._status = code
         super().send_response(code, message)
 
+    # ── Header-based auth (defense-in-depth) ────────────────────────────────────
+    # Primary enforcement is at the reverse proxy (Caddy) on the public mount, but
+    # we also honor the X-Marginalia-Token header here so a direct hit to the
+    # container is rejected when a token is configured. Returns True if the request
+    # may proceed, else sends 403 and returns False. /ping stays open for health
+    # checks. The legacy JSON-body token check on /ask remains for old plugins.
+    def _header_auth_ok(self) -> bool:
+        if not TOKEN:
+            return True
+        supplied = self.headers.get("X-Marginalia-Token", "")
+        if supplied == TOKEN:
+            return True
+        self.send_error(403, "Forbidden")
+        return False
+
     # ── GET dispatch (with request monitoring) ──────────────────────────────────
     def do_GET(self):
         # Monitor pages are served directly and never self-tracked.
         if self.path == "/monitor":
+            if not self._header_auth_ok():
+                return
             self._send(200, monitor.render_html().encode(), "text/html; charset=utf-8")
             return
         if self.path == "/monitor/data":
+            if not self._header_auth_ok():
+                return
             data = monitor.snapshot()
             data["model"] = MODEL_ID
             data["effort"] = COMPANION_EFFORT
@@ -584,7 +603,11 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch_get(self):
         if self.path == "/ping":
             self._send(200, b"pong", "text/plain")
-        elif self.path == "/index":
+            return
+        # All other GET endpoints require the token when one is configured.
+        if not self._header_auth_ok():
+            return
+        if self.path == "/index":
             # Pi chat uses this to browse the X-Ray cache
             index = xray_cache.load_index()
             self._send_json(200, index)
@@ -632,6 +655,9 @@ class Handler(BaseHTTPRequestHandler):
                 monitor.end(rec, getattr(self, "_status", 200))
 
     def _dispatch_post(self):
+        # Token gate (defense-in-depth; primary enforcement at the reverse proxy).
+        if not self._header_auth_ok():
+            return
         if self.path == "/book-index/init":
             self._handle_xray_init()
             return
@@ -675,8 +701,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400, f"Invalid JSON: {exc}")
             return
 
-        # Token check (optional)
-        if TOKEN and req.get("token") != TOKEN:
+        # Token check (optional). Accept EITHER the X-Marginalia-Token header
+        # (checked already in _dispatch_post) OR the legacy JSON body token, so
+        # older plugin builds that only send the body token keep working.
+        if TOKEN and req.get("token") != TOKEN \
+                and self.headers.get("X-Marginalia-Token", "") != TOKEN:
             self.send_error(403, "Forbidden")
             return
 

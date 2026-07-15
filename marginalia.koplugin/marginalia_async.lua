@@ -47,6 +47,7 @@ end
 function Async.post(url, body_table, on_done, on_error, opts)
     local body_str = rapidjson.encode(body_table)
     local want_raw = opts and opts.raw
+    local extra_headers = (opts and opts.headers) or {}
 
     -- ── child function — runs in forked subprocess ──────────────────────────
     -- Must not call require() for new modules — only use parent-captured upvalues.
@@ -58,14 +59,17 @@ function Async.post(url, body_table, on_done, on_error, opts)
                 socketutil:set_timeout(25, 30)
             end
 
+            local req_headers = {
+                ["Content-Type"]   = "application/json",
+                ["Content-Length"] = tostring(#body_str),
+            }
+            for k, v in pairs(extra_headers) do req_headers[k] = v end
+
             local pipe_sink = wrap_fd(child_write_fd)
             local ok2, code = http.request({
                 url     = url,
                 method  = "POST",
-                headers = {
-                    ["Content-Type"]   = "application/json",
-                    ["Content-Length"] = tostring(#body_str),
-                },
+                headers = req_headers,
                 source = ltn12.source.string(body_str),
                 sink   = ltn12.sink.file(pipe_sink),
             })
@@ -93,13 +97,15 @@ function Async.post(url, body_table, on_done, on_error, opts)
         -- Fork unavailable — fall back to blocking (better than crash)
         logger.warn("marginalia async: fork unavailable, falling back to blocking")
         local sink = {}
+        local fb_headers = {
+            ["Content-Type"]   = "application/json",
+            ["Content-Length"] = tostring(#body_str),
+        }
+        for k, v in pairs(extra_headers) do fb_headers[k] = v end
         local ok, code = http.request({
             url     = url,
             method  = "POST",
-            headers = {
-                ["Content-Type"]   = "application/json",
-                ["Content-Length"] = tostring(#body_str),
-            },
+            headers = fb_headers,
             source = ltn12.source.string(body_str),
             sink   = ltn12.sink.table(sink),
         })

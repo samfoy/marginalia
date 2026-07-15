@@ -51,6 +51,7 @@ local DEFAULT_SETTINGS = {
     host    = "macbook.local",
     port    = 7731,
     token   = "",
+    base_url = "",          -- full URL (e.g. https://samfp.tech/marginalia); overrides host/port
     enabled = true,
     spoiler_free = true,    -- hide characters/events past reading position
     auto_capture = true,    -- on a successful Ask AI lookup, highlight the passage
@@ -74,9 +75,10 @@ end
 
 function PiRead:applySettings()
     local s = self:loadSettings()
-    Bridge.host  = s.host
-    Bridge.port  = s.port
-    Bridge.token = s.token
+    Bridge.host     = s.host
+    Bridge.port     = s.port
+    Bridge.token    = s.token
+    Bridge.base_url = s.base_url or ""
 end
 
 -- ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -1251,16 +1253,42 @@ function PiRead:buildMenu()
             .. "appears in each response."),
     })
 
+    -- Server URL (full HTTPS/reverse-proxy URL; overrides Host/Port when set)
+    table.insert(items, {
+        text_func = function()
+            local b = self:loadSettings().base_url
+            return T(_("Server URL: %1"), (b and b ~= "") and b or _("(using Host/Port)"))
+        end,
+        callback  = function() self:editSetting("base_url", _("Server URL (e.g. https://samfp.tech/marginalia)"), false) end,
+        help_text = _("Full URL of the bridge, including scheme and any subpath "
+            .. "(e.g. https://samfp.tech/marginalia). When set, this overrides Host and Port "
+            .. "— use it for HTTPS access through a reverse proxy. Leave empty for a plain "
+            .. "http://Host:Port connection on your LAN."),
+    })
+
+    -- Token (shared secret; sent as X-Marginalia-Token header on every request)
+    table.insert(items, {
+        text_func = function()
+            local t = self:loadSettings().token
+            return T(_("Token: %1"), (t and t ~= "") and _("(set)") or _("(none)"))
+        end,
+        callback  = function() self:editSetting("token", _("Bridge token (shared secret)"), false) end,
+        help_text = _("Shared secret. Must match MARGINALIA_TOKEN on the bridge (or the "
+            .. "reverse proxy enforcing it). Sent as the X-Marginalia-Token header on every request."),
+    })
+
     -- Bridge host
     table.insert(items, {
         text_func = function() return T(_("Host: %1"), self:loadSettings().host) end,
         callback  = function() self:editSetting("host", _("Bridge host"), false) end,
+        help_text = _("LAN hostname or IP of the bridge. Ignored when Server URL is set."),
     })
 
     -- Bridge port
     table.insert(items, {
         text_func = function() return T(_("Port: %1"), tostring(self:loadSettings().port)) end,
         callback  = function() self:editSetting("port", _("Bridge port"), true) end,
+        help_text = _("Bridge port (default 7731). Ignored when Server URL is set."),
     })
 
     -- Rebuild X-Ray
@@ -1320,14 +1348,17 @@ function PiRead:buildMenu()
             UIManager:show(loading)
             UIManager:scheduleIn(0.1, function()
                 UIManager:close(loading)
+                local target = (Bridge.base_url and Bridge.base_url ~= "")
+                    and Bridge.base_url
+                    or T("%1:%2", Bridge.host, tostring(Bridge.port))
                 if Bridge:ping() then
                     UIManager:show(InfoMessage:new{
-                        text    = T(_("✓ Connected to %1:%2"), Bridge.host, tostring(Bridge.port)),
+                        text    = T(_("✓ Connected to %1"), target),
                         timeout = 4,
                     })
                 else
                     UIManager:show(InfoMessage:new{
-                        text    = T(_("✗ Cannot reach %1:%2"), Bridge.host, tostring(Bridge.port)),
+                        text    = T(_("✗ Cannot reach %1"), target),
                         timeout = 5,
                     })
                 end
