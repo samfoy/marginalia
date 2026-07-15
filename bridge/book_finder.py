@@ -333,14 +333,31 @@ def find_epub(title: str, author: str = "",
     """
     Find the best-matching EPUB by title/author.
 
-    Tries the flat BookOrbit library first, then falls back to the Calibre layout.
-    Returns a dict with epub_path, calibre_id, title, author, series, series_index,
-    or None if no match scores ≥ 0.60.
+    Source order:
+      1. Flat local library (MARGINALIA_EPUB_DIR)
+      2. Calibre-layout local library (MARGINALIA_CALIBRE_DB)
+      3. BookOrbit server (MARGINALIA_BOOKORBIT_URL) — downloads to a local
+         cache and returns the same dict shape. Tried last because it does
+         network I/O; local files win when present.
+
+    Returns a dict with epub_path, calibre_id, title, author, series,
+    series_index (and source="bookorbit" for BookOrbit hits), or None if no
+    source scores ≥ 0.60.
     """
     result = _find_epub_flat(title, author, epub_dir)
     if result:
         return result
-    return _find_epub_calibre(title, author, calibre_lib)
+    result = _find_epub_calibre(title, author, calibre_lib)
+    if result:
+        return result
+    # BookOrbit server source (no-op unless configured).
+    try:
+        import bookorbit_source
+        if bookorbit_source.is_enabled():
+            return bookorbit_source.find_epub(title, author)
+    except Exception as e:  # never let a BookOrbit error break lookup
+        logger.warning("book_finder: bookorbit source error: %s", e)
+    return None
 
 
 def get_series_books(series_name: str,

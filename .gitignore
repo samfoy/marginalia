@@ -20,3 +20,6 @@ marginalia.egg-info/
 
 # Server-specific setup notes (not for the public repo)
 SETUP_NOTES.md
+
+# Device plugin backups (adb pulls)
+.device-backup-*/
