@@ -70,7 +70,10 @@ def _author_name(a) -> str:
 # ── Token cache ─────────────────────────────────────────────────────────────
 _token: str | None = None
 _token_ts: float = 0.0
-_TOKEN_TTL = 20 * 60  # re-login every 20 min; JWT lifetime is longer but this is cheap
+# JWT lifetime is generous; cache aggressively. BookOrbit throttles /auth/login
+# on a ~60s rolling window, so re-logging in per-book during a batch trips a 429
+# and blocks new tokens. A long TTL means one login serves an entire warm run.
+_TOKEN_TTL = 6 * 60 * 60  # 6h
 
 
 def _api(path: str) -> str:
@@ -94,35 +97,75 @@ def _request(path: str, *, method: str = "GET", token: str | None = None,
 
 
 def _login() -> str | None:
-    """Return a valid JWT, using a short-lived cache. None on failure."""
+    """Return a valid JWT, using a long-lived cache. Retries on 429 (BookOrbit
+    throttles /auth/login on a ~60s window). None only on hard failure."""
     global _token, _token_ts
     if _token and (time.time() - _token_ts) < _TOKEN_TTL:
         return _token
-    try:
-        resp = _request("/auth/login", method="POST",
-                        body={"username": BOOKORBIT_USER, "password": BOOKORBIT_PASSWORD})
-        tok = resp.get("accessToken") or resp.get("access_token")
-        if not tok:
-            logger.warning("bookorbit: login response had no accessToken")
+    for attempt in range(4):
+        try:
+            resp = _request("/auth/login", method="POST",
+                            body={"username": BOOKORBIT_USER, "password": BOOKORBIT_PASSWORD})
+            tok = resp.get("accessToken") or resp.get("access_token")
+            if not tok:
+                logger.warning("bookorbit: login response had no accessToken")
+                return None
+            _token, _token_ts = tok, time.time()
+            logger.info("bookorbit: authenticated as %s", BOOKORBIT_USER)
+            return tok
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 3:
+                # Honor Retry-After if present, else wait out the throttle window.
+                wait = 0
+                try:
+                    wait = int(e.headers.get("Retry-After", "0"))
+                except (TypeError, ValueError):
+                    wait = 0
+                wait = wait or 20 * (attempt + 1)
+                logger.warning("bookorbit: login rate-limited (429), waiting %ss", wait)
+                time.sleep(wait)
+                continue
+            logger.warning("bookorbit: login failed: HTTP %s", e.code)
             return None
-        _token, _token_ts = tok, time.time()
-        logger.info("bookorbit: authenticated as %s", BOOKORBIT_USER)
-        return tok
-    except Exception as e:
-        logger.warning("bookorbit: login failed: %s", e)
-        return None
+        except Exception as e:
+            if attempt < 3:
+                time.sleep(5 * (attempt + 1))
+                continue
+            logger.warning("bookorbit: login failed: %s", e)
+            return None
+    return None
 
 
 # ── Search + download ───────────────────────────────────────────────────────
 
 def _search(title: str, token: str) -> list[dict]:
-    """Return raw search hits for a title query, or [] on error."""
-    try:
-        q = urllib.parse.quote(title)
-        return _request(f"/books/search?q={q}", token=token) or []
-    except Exception as e:
-        logger.debug("bookorbit: search failed for %r: %s", title, e)
-        return []
+    """Return raw search hits for a title query. Retries on 429 / transient
+    errors (BookOrbit's /books/search is rate-throttled under batch load and
+    would otherwise return [] → a spurious 'no match')."""
+    q = urllib.parse.quote(title)
+    for attempt in range(4):
+        try:
+            return _request(f"/books/search?q={q}", token=token) or []
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 3:
+                wait = 0
+                try:
+                    wait = int(e.headers.get("Retry-After", "0"))
+                except (TypeError, ValueError):
+                    wait = 0
+                wait = wait or 15 * (attempt + 1)
+                logger.warning("bookorbit: search rate-limited (429) for %r, waiting %ss", title, wait)
+                time.sleep(wait)
+                continue
+            logger.debug("bookorbit: search HTTP %s for %r", e.code, title)
+            return []
+        except Exception as e:
+            if attempt < 3:
+                time.sleep(5 * (attempt + 1))
+                continue
+            logger.debug("bookorbit: search failed for %r: %s", title, e)
+            return []
+    return []
 
 
 def _best_match(hits: list[dict], title: str, author: str) -> tuple[dict, float] | None:
