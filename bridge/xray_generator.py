@@ -416,26 +416,43 @@ def _call(prompt: str, model_id: str = MODEL_ID) -> str:
 
 # ── JSON parsing + repair ──────────────────────────────────────────────────────
 
+def _repair_json_text(s: str) -> str:
+    """Best-effort textual repairs for common LLM JSON glitches that json.loads
+    rejects: trailing commas before ] or }, and a missing comma between two
+    adjacent values (`}\\n{`, `"\\n"`, `]\\n[`). Conservative — only touches
+    whitespace-separated boundaries so it can't corrupt valid JSON."""
+    import re as _re
+    # Remove trailing commas:  ,]  or  ,}
+    s = _re.sub(r",(\s*[\]}])", r"\1", s)
+    # Insert missing commas between adjacent objects / strings / arrays that are
+    # separated only by whitespace (the 'Expecting , delimiter' family).
+    s = _re.sub(r"(\})(\s*)(\{)", r"\1,\2\3", s)
+    s = _re.sub(r"(\])(\s*)(\[)", r"\1,\2\3", s)
+    s = _re.sub(r'(")(\s*\n\s*)(")', r"\1,\2\3", s)
+    return s
+
+
 def _parse(raw: str) -> dict:
     raw = raw.strip()
     # Strip markdown fences
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
 
+    # 1) Strict parse.
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         pass
 
-    # Find first { and try to balance
+    # 2) Balance braces from the first { (handles trailing prose / truncation).
     start = raw.find("{")
     if start == -1:
         raise ValueError("No JSON object in response")
-    raw = raw[start:]
+    balanced = raw[start:]
 
     depth, in_str, esc = 0, False, False
     end = -1
-    for i, c in enumerate(raw):
+    for i, c in enumerate(balanced):
         if esc:
             esc = False; continue
         if c == "\\" and in_str:
@@ -450,8 +467,98 @@ def _parse(raw: str) -> dict:
                 if depth == 0:
                     end = i; break
 
-    fragment = raw[: end + 1] if end >= 0 else raw
+    fragment = balanced[: end + 1] if end >= 0 else balanced
+    try:
+        return json.loads(fragment)
+    except json.JSONDecodeError:
+        pass
+
+    # 3) Textual repair (trailing / missing commas) then reparse.
+    try:
+        return json.loads(_repair_json_text(fragment))
+    except json.JSONDecodeError as e:
+        logger.warning("xray _parse: repair failed (%s); salvaging entities", e)
+
+    # 4) Last resort: salvage well-formed entity objects per array key so one
+    #    malformed item doesn't lose the whole Book Index. Reconstructs a minimal
+    #    valid dict from whatever parses.
+    salvaged = _salvage_entities(fragment)
+    if salvaged:
+        return salvaged
+    # Give up — re-raise the strict error for the caller's retry/fallback path.
     return json.loads(fragment)
+
+
+def _salvage_entities(text: str) -> dict | None:
+    """Pull each top-level array (characters, locations, terms, timeline, ...)
+    out of a malformed Book Index blob and keep only the array elements that
+    individually parse as JSON objects. Returns a dict of the recovered arrays
+    plus any scalar top-level keys we can still read, or None if nothing usable."""
+    import re as _re
+    out: dict = {}
+    # Scalar top-level string keys (e.g. "book_type": "fiction").
+    for k, v in _re.findall(r'"(\w+)"\s*:\s*"([^"\\]*)"', text):
+        if k in ("book_type", "author_info"):
+            out.setdefault(k, v)
+    # Array keys → salvage element objects.
+    for key in ("characters", "locations", "themes", "terms",
+                "historical_figures", "references", "timeline"):
+        m = _re.search(rf'"{key}"\s*:\s*\[', text)
+        if not m:
+            continue
+        # Walk from the opening [ to its matching ] (brace-aware).
+        i = text.index("[", m.end() - 1)
+        depth, in_str, esc, close = 0, False, False, -1
+        for j in range(i, len(text)):
+            c = text[j]
+            if esc:
+                esc = False; continue
+            if c == "\\" and in_str:
+                esc = True; continue
+            if c == '"':
+                in_str = not in_str; continue
+            if not in_str:
+                if c == "[":
+                    depth += 1
+                elif c == "]":
+                    depth -= 1
+                    if depth == 0:
+                        close = j; break
+        arr_text = text[i: (close + 1) if close >= 0 else len(text)]
+        items = []
+        # Extract balanced { ... } objects and keep the ones that parse.
+        d2, in_s2, e2, obj_start = 0, False, False, -1
+        for j, c in enumerate(arr_text):
+            if e2:
+                e2 = False; continue
+            if c == "\\" and in_s2:
+                e2 = True; continue
+            if c == '"':
+                in_s2 = not in_s2; continue
+            if not in_s2:
+                if c == "{":
+                    if d2 == 0:
+                        obj_start = j
+                    d2 += 1
+                elif c == "}":
+                    d2 -= 1
+                    if d2 == 0 and obj_start >= 0:
+                        chunk = arr_text[obj_start: j + 1]
+                        try:
+                            items.append(json.loads(chunk))
+                        except json.JSONDecodeError:
+                            try:
+                                items.append(json.loads(_repair_json_text(chunk)))
+                            except json.JSONDecodeError:
+                                pass  # drop this single malformed item
+                        obj_start = -1
+        if items:
+            out[key] = items
+    if any(out.get(k) for k in ("characters", "locations", "terms", "timeline")):
+        logger.info("xray _parse: salvaged %s",
+                    {k: len(v) for k, v in out.items() if isinstance(v, list)})
+        return out
+    return None
 
 
 # ── Data normalization and merge ───────────────────────────────────────────────
