@@ -96,11 +96,12 @@ def _request(path: str, *, method: str = "GET", token: str | None = None,
     return payload if raw else json.loads(payload)
 
 
-def _login() -> str | None:
+def _login(force: bool = False) -> str | None:
     """Return a valid JWT, using a long-lived cache. Retries on 429 (BookOrbit
-    throttles /auth/login on a ~60s window). None only on hard failure."""
+    throttles /auth/login on a ~60s window). None only on hard failure.
+    force=True bypasses the cache (used to refresh a server-invalidated token)."""
     global _token, _token_ts
-    if _token and (time.time() - _token_ts) < _TOKEN_TTL:
+    if not force and _token and (time.time() - _token_ts) < _TOKEN_TTL:
         return _token
     for attempt in range(4):
         try:
@@ -136,36 +137,53 @@ def _login() -> str | None:
     return None
 
 
-# ── Search + download ───────────────────────────────────────────────────────
-
-def _search(title: str, token: str) -> list[dict]:
-    """Return raw search hits for a title query. Retries on 429 / transient
-    errors (BookOrbit's /books/search is rate-throttled under batch load and
-    would otherwise return [] → a spurious 'no match')."""
-    q = urllib.parse.quote(title)
-    for attempt in range(4):
+def _authed(path: str, *, raw: bool = False, retries: int = 3):
+    """GET a path with the cached token, transparently handling:
+      - 401 (server-invalidated/expired JWT) → force re-login once, retry
+      - 429 (rate throttle) → wait (Retry-After or backoff), retry
+    Raises on hard/other errors so callers can distinguish. This is the single
+    choke point that keeps a stale token from silently degrading to empty
+    results (which the matcher would misread as 'book not found')."""
+    for attempt in range(retries + 1):
+        token = _login()
+        if not token:
+            raise RuntimeError("bookorbit: no token")
         try:
-            return _request(f"/books/search?q={q}", token=token) or []
+            return _request(path, token=token, raw=raw)
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < 3:
+            if e.code == 401 and attempt < retries:
+                logger.info("bookorbit: token rejected (401), re-authenticating")
+                _login(force=True)
+                continue
+            if e.code == 429 and attempt < retries:
                 wait = 0
                 try:
                     wait = int(e.headers.get("Retry-After", "0"))
                 except (TypeError, ValueError):
                     wait = 0
                 wait = wait or 15 * (attempt + 1)
-                logger.warning("bookorbit: search rate-limited (429) for %r, waiting %ss", title, wait)
+                logger.warning("bookorbit: %s rate-limited (429), waiting %ss", path, wait)
                 time.sleep(wait)
                 continue
-            logger.debug("bookorbit: search HTTP %s for %r", e.code, title)
-            return []
-        except Exception as e:
-            if attempt < 3:
+            raise
+        except Exception:
+            if attempt < retries:
                 time.sleep(5 * (attempt + 1))
                 continue
-            logger.debug("bookorbit: search failed for %r: %s", title, e)
-            return []
-    return []
+            raise
+
+
+# ── Search + download ───────────────────────────────────────────────────────
+
+def _search(title: str) -> list[dict]:
+    """Return raw search hits for a title query. Token refresh + 429/401 retry
+    is handled by _authed; only truly empty results return []."""
+    q = urllib.parse.quote(title)
+    try:
+        return _authed(f"/books/search?q={q}") or []
+    except Exception as e:
+        logger.warning("bookorbit: search failed for %r: %s", title, e)
+        return []
 
 
 def _best_match(hits: list[dict], title: str, author: str) -> tuple[dict, float] | None:
@@ -197,12 +215,12 @@ def _best_match(hits: list[dict], title: str, author: str) -> tuple[dict, float]
     return None
 
 
-def _primary_epub_file(book_id: int, token: str) -> dict | None:
+def _primary_epub_file(book_id: int) -> dict | None:
     """Fetch book detail and return the primary EPUB file dict {id, filename, ...}."""
     try:
-        detail = _request(f"/books/{book_id}", token=token)
+        detail = _authed(f"/books/{book_id}")
     except Exception as e:
-        logger.debug("bookorbit: detail fetch failed for book %s: %s", book_id, e)
+        logger.warning("bookorbit: detail fetch failed for book %s: %s", book_id, e)
         return None
     files = detail.get("files") or []
     epubs = [f for f in files if str(f.get("format", "")).lower() == "epub"]
@@ -218,10 +236,10 @@ def _cache_path(file_id: int, filename: str) -> Path:
     return CACHE_DIR / f"{file_id}__{safe}"
 
 
-def _download_epub(file_id: int, dest: Path, token: str) -> bool:
+def _download_epub(file_id: int, dest: Path) -> bool:
     """Download a BookOrbit EPUB file to dest. Returns True on success."""
     try:
-        data = _request(f"/books/files/{file_id}/download", token=token, raw=True)
+        data = _authed(f"/books/files/{file_id}/download", raw=True)
     except Exception as e:
         logger.warning("bookorbit: download failed for file %s: %s", file_id, e)
         return False
@@ -248,21 +266,21 @@ def find_epub(title: str, author: str = "") -> dict | None:
     """
     if not is_enabled():
         return None
-    token = _login()
-    if not token:
+    # Ensure we can authenticate before searching (fail fast if BookOrbit down).
+    if not _login():
         return None
 
-    hits = _search(title, token)
+    hits = _search(title)
     if not hits and author:
         # Some titles index better with the author appended.
-        hits = _search(f"{title} {author}", token)
+        hits = _search(f"{title} {author}")
     match = _best_match(hits, title, author)
     if not match:
         logger.info("bookorbit: no confident match for %r by %r", title, author)
         return None
     hit, score = match
 
-    pf = _primary_epub_file(hit["id"], token)
+    pf = _primary_epub_file(hit["id"])
     if not pf:
         logger.info("bookorbit: matched '%s' but it has no EPUB file", hit.get("title"))
         return None
@@ -271,7 +289,7 @@ def find_epub(title: str, author: str = "") -> dict | None:
 
     dest = _cache_path(file_id, fmeta.get("filename", ""))
     if not dest.exists() or dest.stat().st_size == 0:
-        if not _download_epub(file_id, dest, token):
+        if not _download_epub(file_id, dest):
             return None
 
     authors = detail.get("authors") or hit.get("authors") or []
@@ -299,12 +317,11 @@ def list_all() -> list[dict]:
     """
     if not is_enabled():
         return []
-    token = _login()
-    if not token:
+    if not _login():
         return []
     # BookOrbit search with an empty-ish query returns nothing; page libraries.
     try:
-        libs = _request("/libraries", token=token) or []
+        libs = _authed("/libraries") or []
     except Exception as e:
         logger.debug("bookorbit: libraries fetch failed: %s", e)
         return []
