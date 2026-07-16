@@ -343,14 +343,17 @@ end
 
 -- ── X-Ray request & polling ───────────────────────────────────────────────────
 
-function PiRead:requestXRay(title, author, reading_pct)
+function PiRead:requestXRay(title, author, reading_pct, opts)
     logger.info("marginalia: requesting Book Index for", title)
     self._xray_loading = true
-    Bridge:xrayInitAsync({
+    local retry_after_empty = (opts and opts.retry_after_empty) or 0
+    local init_params = {
         book_title  = title,
         book_author = author,
         reading_pct = reading_pct or 0,
-    }, function(resp)
+    }
+    if opts and opts.force then init_params.force = true end
+    Bridge:xrayInitAsync(init_params, function(resp)
         self._xray_loading = false
         if not resp then return end
         if resp.status == "ready" then
@@ -396,6 +399,40 @@ function PiRead:requestXRay(title, author, reading_pct)
                 end
             end, function(err)
                 logger.warn("marginalia: epub upload failed:", err)
+                -- "empty response" happens when postFile's subprocess pipe
+                -- drains empty even though the bridge accepted the POST and
+                -- returned 202 + JSON (observed on Go7 uploading The Mind
+                -- Illuminated 7 MB EPUB, 2026-07-12). The bridge cache and
+                -- job are live at this point, so re-init in a moment to pick
+                -- up the job/cache instead of leaving the user stuck.
+                --
+                -- Bounded: cap retries so a broken server / persistent LuaSocket
+                -- subprocess bug can't spin init→upload forever (Go7, 2026-07-13).
+                -- The server-side /book-index/init fix (attach to in-flight job
+                -- by title) means one retry is usually enough; if we still
+                -- don't have a job_id after MAX_EMPTY_RETRIES, surface the error.
+                local MAX_EMPTY_RETRIES = 3
+                if err == "empty response" and retry_after_empty < MAX_EMPTY_RETRIES then
+                    local next_attempt = retry_after_empty + 1
+                    local backoff = ({2, 5, 10})[next_attempt] or 10
+                    logger.info("marginalia: retrying /book-index/init after upload-empty-response (attempt %d/%d, backoff %ds)",
+                                next_attempt, MAX_EMPTY_RETRIES, backoff)
+                    UIManager:show(InfoMessage:new{
+                        text    = _("Sync\u{2026}"),
+                        timeout = 2,
+                    })
+                    UIManager:scheduleIn(backoff, function()
+                        -- If polling has already started for a job (server
+                        -- returned generating on a previous retry), don't
+                        -- kick off another upload cycle.
+                        if self._xray_job_id then
+                            logger.info("marginalia: skip retry — already polling job %s", tostring(self._xray_job_id))
+                            return
+                        end
+                        self:requestXRay(title, author, reading_pct, {retry_after_empty = next_attempt})
+                    end)
+                    return
+                end
                 UIManager:show(InfoMessage:new{
                     text    = T(_("Book Index upload failed: %1"), err),
                     timeout = 6,
@@ -1312,7 +1349,7 @@ function PiRead:buildMenu()
                 UIManager:show(InfoMessage:new{ text = _("Not connected to network."), timeout = 3 })
                 return
             end
-            self:requestXRay(title, author, self:currentReadingPct())
+            self:requestXRay(title, author, self:currentReadingPct(), { force = true })
         end,
     })
 
