@@ -199,6 +199,85 @@ def ask_claude(text: str, context: str | None, book_title: str | None,
 # ── X-Ray generation job registry ─────────────────────────────────────────────
 # ── Obsidian vault note saving ─────────────────────────────────────────────────
 
+def _norm_title(t: str) -> str:
+    """Normalize a title for cross-source matching: drop subtitle after ':', lowercase,
+    strip punctuation. 'Atomic Habits: An Easy...' and 'Atomic Habits' collapse to same."""
+    if not t:
+        return ""
+    t = t.lower().split(":")[0]
+    t = re.sub(r"[^a-z0-9 ]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+_AUTHOR_STOPWORDS = {"phd", "md", "jr", "sr", "dr", "the", "and"}
+
+
+def _author_tokens(name: str) -> set[str]:
+    """Set of lowercased name tokens across ALL listed authors, minus honorifics.
+
+    Used for tolerant author matching: KOReader may send authors in a different order
+    or format than an import ('Culadasa (John Yates) & Matthew Immergut' vs a garbled
+    'CuladasaMatthew Immergut, Phd'). Requiring only a non-empty token intersection
+    still binds the two to the same book without demanding identical author strings.
+    """
+    if not name:
+        return set()
+    name = re.sub(r"\(.*?\)", " ", name)
+    toks = {t.lower() for t in re.findall(r"[A-Za-z]{2,}", name)}
+    return toks - _AUTHOR_STOPWORDS
+
+
+def _find_existing_book_note(book_title: str, book_author: str) -> str | None:
+    """Return the path of an existing note in BOOKS_DIR for the same book, or None.
+
+    Matches on (normalized title, author surname), reading each note's YAML frontmatter
+    title/author (falling back to the filename stem). This lets KOReader-driven saves land
+    in a note an import already created under a shorter name, preventing duplicate files.
+    """
+    if not os.path.isdir(BOOKS_DIR):
+        return None
+    want_title = _norm_title(book_title)
+    if not want_title:
+        return None
+    want_authors = _author_tokens(book_author)
+    for entry in os.listdir(BOOKS_DIR):
+        if not entry.endswith(".md") or entry.startswith("Series - "):
+            continue
+        if entry in ("Books.md", "Reading Dashboard.md"):
+            continue
+        path = os.path.join(BOOKS_DIR, entry)
+        try:
+            with open(path, encoding="utf-8") as f:
+                head = f.read(1500)
+        except OSError:
+            continue
+        ft, fa = None, None
+        m = re.match(r"---\n(.*?)\n---", head, re.S)
+        if m:
+            for line in m.group(1).splitlines():
+                mm = re.match(r"^(title|author):\s*(.*)$", line)
+                if mm:
+                    val = mm.group(2).strip().strip("'\"")
+                    if mm.group(1) == "title":
+                        ft = val
+                    else:
+                        fa = val
+        # Fall back to filename stem "<Author> - <Title>" when frontmatter is absent.
+        if ft is None:
+            stem = entry[:-3]
+            ft = stem.split(" - ", 1)[1] if " - " in stem else stem
+            if fa is None and " - " in stem:
+                fa = stem.split(" - ", 1)[0]
+        if _norm_title(ft) != want_title:
+            continue
+        # Title matches. Confirm the author too — but tolerantly: a non-empty token
+        # overlap is enough. If either side lists no author, title match alone binds.
+        note_authors = _author_tokens(fa or "")
+        if not want_authors or not note_authors or (want_authors & note_authors):
+            return path
+    return None
+
+
 def _save_vault_note(
     highlight: str, context: str,
     book_title: str, book_author: str, reading_pct: float,
@@ -222,9 +301,19 @@ def _save_vault_note(
     def safe(s: str) -> str:
         return re.sub(r'[\\/:*?"<>|]', '', s).strip()
 
-    filename = (f"{safe(book_author)} - {safe(book_title)}.md"
-                if book_author else f"{safe(book_title)}.md")
-    filepath = os.path.join(BOOKS_DIR, filename)
+    # Reuse an existing note for the same book if one already exists (e.g. created by a
+    # StoryGraph/Hardcover import under a cleaner short name), instead of minting a new
+    # "<Full Author> - <Full Title: Subtitle>.md" that duplicates it. KOReader sends full
+    # EPUB metadata (long subtitles, multi-author strings) while imports use short names,
+    # so a naive filename would collide-by-content. Match on normalized title + author
+    # surname — the same key the BookOrbit sync uses.
+    existing = _find_existing_book_note(book_title, book_author)
+    if existing:
+        filepath = existing
+    else:
+        filename = (f"{safe(book_author)} - {safe(book_title)}.md"
+                    if book_author else f"{safe(book_title)}.md")
+        filepath = os.path.join(BOOKS_DIR, filename)
 
     # Build bullet. A multi-line value (Pi's prose answer) is indented so it
     # stays part of the Markdown list item.

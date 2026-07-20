@@ -153,6 +153,49 @@ class TestSaveVaultNote:
         assert os.path.isabs(path)
         assert os.path.exists(path)
 
+    def test_reuses_existing_note_despite_subtitle_and_author_variation(
+        self, tmp_vault, monkeypatch
+    ):
+        """KOReader sends full EPUB metadata (long subtitle, multi-author). If an import
+        already made a short-named note for the same book, the save must land there, not
+        create a duplicate file."""
+        books = _books_dir(tmp_vault)
+        os.makedirs(books, exist_ok=True)
+        monkeypatch.setattr(server, "BOOKS_DIR", books)
+        # Pre-existing import-style note under a clean short name.
+        existing = os.path.join(books, "Culadasa - The Mind Illuminated.md")
+        with open(existing, "w", encoding="utf-8") as f:
+            f.write(
+                '---\ntitle: "The Mind Illuminated: A Complete Meditation Guide"\n'
+                'author: "Culadasa (John Yates) & Matthew Immergut"\n'
+                "tags:\n  - book\n---\n\n# The Mind Illuminated\n\n## Notes\n\n"
+            )
+        # KOReader save with the messy full metadata.
+        path = server._save_vault_note(
+            highlight="A passage on mind-wandering",
+            context="",
+            book_title="The Mind Illuminated: A Complete Meditation Guide Integrating "
+                       "Buddhist Wisdom and Brain Science for Greater Mindfulness",
+            book_author="CuladasaMatthew Immergut, Phd",
+            reading_pct=18.0,
+        )
+        # Must reuse the existing file, not mint a second one.
+        assert path == existing
+        md_files = [f for f in os.listdir(books) if f.endswith(".md")]
+        assert len(md_files) == 1, f"expected 1 note, got {md_files}"
+        assert "A passage on mind-wandering" in open(existing).read()
+
+    def test_creates_note_when_no_existing_match(self, tmp_vault, monkeypatch):
+        books = _books_dir(tmp_vault)
+        monkeypatch.setattr(server, "BOOKS_DIR", books)
+        path = server._save_vault_note(
+            highlight="hi", context="",
+            book_title="A Totally New Book", book_author="Jane Doe",
+            reading_pct=5,
+        )
+        assert os.path.basename(path) == "Jane Doe - A Totally New Book.md"
+        assert os.path.exists(path)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # _create_standalone_note
