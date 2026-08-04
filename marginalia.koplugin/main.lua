@@ -30,6 +30,7 @@ local Cache     = require("marginalia_cache")
 local Context   = require("marginalia_context")
 local XRayUI    = require("marginalia_xray")
 local Queue     = require("marginalia_queue")
+local TranslationSidecar = require("marginalia_translation_sidecar")
 
 local PiRead = WidgetContainer:extend{
     name = "marginalia",
@@ -683,7 +684,7 @@ function PiRead:hookHighlightDialog()
                     end
                 end
 
-                -- Not in cache — ask bridge
+                -- Not in the Book Index — offer local translation or bridge modes.
                 this:onClose()
                 self:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author, captured)
             end,
@@ -761,6 +762,32 @@ local MODES = {
     { id = "translate", label = _("Translate to English") },
 }
 
+function PiRead:handleModeSelection(text, prev_ctx, next_ctx, book_title, book_author, mode_id, mode_label, captured)
+    if mode_id == "translate" then
+        local epub_path = self.ui and self.ui.document and self.ui.document.file
+        local translation
+        if type(epub_path) == "string" and epub_path:lower():match("%.epub$") then
+            local ok, result = pcall(TranslationSidecar.lookup, epub_path, text)
+            if ok then translation = result end
+        end
+        if translation then
+            UIManager:show(TextViewer:new{
+                title  = _("Translate to English"),
+                text   = translation,
+                width  = math.floor(Screen:getWidth()  * 0.92),
+                height = math.floor(Screen:getHeight() * 0.78),
+            })
+        else
+            UIManager:show(InfoMessage:new{
+                text = _("No precomputed translation found for this selection."),
+                timeout = 4,
+            })
+        end
+        return
+    end
+    self:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mode_id, mode_label, captured)
+end
+
 function PiRead:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author, captured)
     local buttons = {}
     for _, mode in ipairs(MODES) do
@@ -768,7 +795,7 @@ function PiRead:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author
         table.insert(buttons, {{ text = mlabel, callback = function()
             UIManager:close(self._mode_dialog)
             self._mode_dialog = nil
-            self:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mid, mlabel, captured)
+            self:handleModeSelection(text, prev_ctx, next_ctx, book_title, book_author, mid, mlabel, captured)
         end }})
     end
     table.insert(buttons, {{ text = _("Cancel"), callback = function()

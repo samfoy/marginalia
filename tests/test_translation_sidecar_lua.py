@@ -310,10 +310,10 @@ assert(ok and miss == nil and type(reason) == "string")
     )
 
 
-def test_module_is_local_only_and_main_is_untouched_by_slice():
+def test_module_is_local_only_and_wired_from_main():
     module_path = PLUGIN_DIR / "marginalia_translation_sidecar.lua"
     source = module_path.read_text(encoding="utf-8")
     forbidden = ["require(\"bridge\")", "askasync", "http", "socket", "os.execute", "io.popen", "python"]
     assert all(token not in source.lower() for token in forbidden)
     main = (PLUGIN_DIR / "main.lua").read_text(encoding="utf-8")
-    assert "marginalia_translation_sidecar" not in main
+    assert 'require("marginalia_translation_sidecar")' in main
