@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from xml.etree import ElementTree as ET
 
+from translation_text import normalize_source
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,6 +68,106 @@ def _html_to_text(html: str) -> str:
     except Exception:
         pass
     return p.result()
+
+
+# ── Translation candidate extraction ─────────────────────────────────────────
+
+_CANDIDATE_TAGS = frozenset(("em", "i"))
+_LANG_CONTAINER_TAGS = frozenset(("html", "head", "body"))
+_CANDIDATE_SKIP_TAGS = frozenset(("head", "script", "style"))
+_CANDIDATE_WHITESPACE = re.compile(r"[ \t\r\n\f\v]+")
+
+
+@dataclass
+class _CandidateCapture:
+    start_index: int
+    language_hint: str
+    parts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _CandidateElement:
+    tag: str
+    language_hint: str
+    capture: _CandidateCapture | None
+    starts_skip: bool
+
+
+class _TranslationCandidateParser(HTMLParser):
+    """Collect marked XHTML regions while retaining source-start order."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._elements: list[_CandidateElement] = []
+        self._active: list[_CandidateCapture] = []
+        self._finished: list[_CandidateCapture] = []
+        self._skip_depth = 0
+        self._next_start_index = 0
+
+    @staticmethod
+    def _language(attrs: list[tuple[str, str | None]], inherited: str) -> tuple[str, bool]:
+        values = {name.lower(): value for name, value in attrs}
+        value = values.get("lang") or values.get("xml:lang")
+        if value is None or not value.strip():
+            return inherited, False
+        value = value.strip()
+        return re.sub(r"[A-Z]", lambda match: match.group(0).lower(), value), True
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        inherited = self._elements[-1].language_hint if self._elements else ""
+        language_hint, has_explicit_language = self._language(attrs, inherited)
+        starts_skip = tag in _CANDIDATE_SKIP_TAGS
+        if starts_skip:
+            self._skip_depth += 1
+
+        capture = None
+        is_marked = tag in _CANDIDATE_TAGS
+        is_language_region = has_explicit_language and tag not in _LANG_CONTAINER_TAGS
+        if self._skip_depth == 0 and (is_marked or is_language_region):
+            capture = _CandidateCapture(self._next_start_index, language_hint)
+            self._next_start_index += 1
+            self._active.append(capture)
+
+        self._elements.append(
+            _CandidateElement(tag, language_hint, capture, starts_skip)
+        )
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        matching_index = next(
+            (index for index in range(len(self._elements) - 1, -1, -1)
+             if self._elements[index].tag == tag),
+            None,
+        )
+        if matching_index is None:
+            return
+        while len(self._elements) > matching_index:
+            element = self._elements.pop()
+            if element.capture is not None:
+                self._active.remove(element.capture)
+                self._finished.append(element.capture)
+            if element.starts_skip:
+                self._skip_depth -= 1
+
+    def handle_data(self, data):
+        if self._skip_depth == 0:
+            for capture in self._active:
+                capture.parts.append(data)
+
+    def result(self) -> list[_CandidateCapture]:
+        while self._elements:
+            self.handle_endtag(self._elements[-1].tag)
+        return sorted(self._finished, key=lambda capture: capture.start_index)
+
+
+def _candidate_original_text(parts: list[str]) -> str:
+    text = "".join(parts).replace("\u00a0", " ").replace("\u202f", " ")
+    return _CANDIDATE_WHITESPACE.sub(" ", text).strip()
 
 
 # ── EPUB structure parsing ─────────────────────────────────────────────────────
@@ -229,6 +331,17 @@ class EpubContent:
     epub_path: str
 
 
+@dataclass(frozen=True)
+class TranslationCandidate:
+    original_source: str
+    normalized_source: str
+    language_hint: str
+    chapter: str
+    spine_path: str
+    spine_index: int
+    candidate_index: int
+
+
 # Chapter titles we want to skip (front/back matter)
 _SKIP_TITLES = re.compile(
     r"^(cover|title page|copyright|dedication|table of contents|contents|"
@@ -241,6 +354,61 @@ _SKIP_TITLES = re.compile(
 _CHAPTER_TITLES = re.compile(
     r"(chapter|part|prologue|epilogue|section|book \d|act \d)", re.IGNORECASE
 )
+
+
+def extract_translation_candidates(epub_path: str) -> list[TranslationCandidate]:
+    """Extract marked translation candidates in deterministic reading order."""
+    captures: list[tuple[str, str, str, int, str]] = []
+
+    with zipfile.ZipFile(str(epub_path)) as epub:
+        opf_path = _find_opf_path(epub)
+        spine_paths, _, ncx_path = _parse_opf(epub, opf_path)
+        toc = _parse_toc(epub, ncx_path)
+
+        for spine_index, spine_path in enumerate(spine_paths):
+            try:
+                html = epub.read(spine_path).decode("utf-8", errors="replace")
+            except KeyError:
+                logger.debug("Spine item not found: %s", spine_path)
+                continue
+
+            parser = _TranslationCandidateParser()
+            try:
+                parser.feed(html)
+            except Exception as error:
+                logger.debug("Candidate parse error in %s: %s", spine_path, error)
+
+            chapter = toc.get(os.path.basename(spine_path), "")
+            for capture in parser.result():
+                captures.append(
+                    (
+                        _candidate_original_text(capture.parts),
+                        capture.language_hint,
+                        chapter,
+                        spine_index,
+                        spine_path,
+                    )
+                )
+
+    candidates: list[TranslationCandidate] = []
+    seen: set[str] = set()
+    for original_source, language_hint, chapter, spine_index, spine_path in captures:
+        normalized_source = normalize_source(original_source)
+        if not normalized_source or normalized_source in seen:
+            continue
+        seen.add(normalized_source)
+        candidates.append(
+            TranslationCandidate(
+                original_source=original_source,
+                normalized_source=normalized_source,
+                language_hint=language_hint,
+                chapter=chapter,
+                spine_path=spine_path,
+                spine_index=spine_index,
+                candidate_index=len(candidates),
+            )
+        )
+    return candidates
 
 
 def extract_epub(epub_path: str) -> EpubContent:
