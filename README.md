@@ -24,7 +24,7 @@ marginalia runs a small bridge server on your computer that your KOReader device
 3. **Syncs with your Obsidian vault** — Ask AI lookups and manual saves create highlights in the book and append formatted entries to the book's vault note.
 
 **Companion features (all spoiler-safe):**
-- **Ask AI** — select text → get an explanation, translation, or context from the bridge
+- **Ask AI** — select text → get an explanation or context from the bridge; Translate to English uses a precomputed local sidecar
 - **AI Wiki** — deep-dive on any character, place, or term from the Book Index
 - **Recap** — "where you left off" summary when returning after a break
 - **Section** — chapter-by-chapter analysis
@@ -96,7 +96,17 @@ marginalia serve   # bridge listens on :7731
 
 ## KOReader plugin
 
-### Install
+### Install with the KOReader App Store (recommended)
+
+Install and open [`omer-faruq/appstore.koplugin`](https://github.com/omer-faruq/appstore.koplugin), then in KOReader:
+
+1. Open **App Store → Plugins → gear/settings → Install plugin from URL**.
+2. Enter `samfoy/marginalia` and install it.
+3. Restart KOReader.
+
+The App Store discovers the canonical nested `marginalia.koplugin/` package in this repository. For later releases, use **Check plugin updates** and update the linked repository. App Store updates replace plugin code but preserve Marginalia settings, cache, and queued notes because KOReader stores them outside the plugin directory.
+
+### Manual alternatives
 
 **Via ADB** (Android/Boox):
 ```bash
@@ -106,6 +116,18 @@ adb push marginalia.koplugin /sdcard/koreader/plugins/marginalia.koplugin
 **Via file manager / MTP:** copy the `marginalia.koplugin/` folder to `koreader/plugins/` on your device.
 
 Restart KOReader after copying.
+
+### Prepare offline translations
+
+Translation sidecars are generated explicitly on the bridge/desktop with the configured LLM; opening, reading, or downloading a book never generates one:
+
+```bash
+marginalia translations "/path/to/Book.epub" [--batch-size N]
+```
+
+The command generates or refreshes a versioned English sidecar beside the EPUB, replacing only its final extension: `Book.epub` becomes `Book.marginalia-translations.json`. Transfer both files to the device under the same directory and paired basename. For example, a BookOrbit or other transfer workflow must deliver both `Lolita.epub` and `Lolita.marginalia-translations.json`; BookOrbit does not automatically generate or transfer the sidecar.
+
+**Translate to English is strictly local and offline.** A sidecar hit displays immediately and is not auto-captured as an AI lookup. A missing, malformed, stale, colliding, ambiguous, or otherwise unavailable sidecar displays exactly **No precomputed translation found for this selection.** There is no bridge or network fallback. Other Ask AI modes still use the bridge and retain their existing capture behavior.
 
 ### Configure
 
@@ -263,7 +285,7 @@ PRs welcome. Key areas:
 - **Ollama / local models** — add a `_invoke_ollama` path in `xray_generator.py`
 - **Streaming responses** — companion endpoints block until complete; requires a protocol change in the KOReader plugin
 - **Windows support** — the bridge is cross-platform; the LaunchAgent is macOS-specific
-- **Plugin distribution** — package as a `.zip` for KOReader's in-app plugin manager
+- **Plugin distribution** — improve App Store packaging and release automation
 
 ---
 
