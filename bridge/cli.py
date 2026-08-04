@@ -1,6 +1,7 @@
-"""marginalia CLI — start the bridge server."""
+"""marginalia command-line interface."""
 from __future__ import annotations
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -69,6 +70,30 @@ def setup(argv: list[str] | None = None) -> None:
     run()
 
 
+def translations(argv: list[str] | None = None) -> None:
+    """Generate or refresh an EPUB's adjacent offline translation sidecar."""
+    parser = argparse.ArgumentParser(
+        prog="marginalia translations",
+        description="Generate an offline English translation sidecar for an EPUB.",
+    )
+    parser.add_argument("epub", type=Path, help="Path to the source EPUB.")
+    parser.add_argument(
+        "--batch-size", type=int, default=20,
+        help="Candidates per model request (default: 20; maximum: 50).",
+    )
+    args = parser.parse_args(argv)
+
+    _load_config()
+    _ensure_bridge_on_path()
+    from translation_sidecar import generate_translation_sidecar
+
+    output = generate_translation_sidecar(args.epub, batch_size=args.batch_size)
+    document = json.loads(output.read_text(encoding="utf-8"))
+    count = len(document["translations"])
+    noun = "translation" if count == 1 else "translations"
+    print(f"Wrote {count} {noun} to {output}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="marginalia",
@@ -77,12 +102,15 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="Start the bridge server.")
     sub.add_parser("setup", help="Interactive first-run setup wizard.")
+    sub.add_parser("translations", help="Generate an offline EPUB translation sidecar.")
     args, rest = parser.parse_known_args(argv)
 
     if args.command == "serve":
         serve(rest)
     elif args.command == "setup":
         setup(rest)
+    elif args.command == "translations":
+        translations(rest)
     else:
         parser.print_help()
 
