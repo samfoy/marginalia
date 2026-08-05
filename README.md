@@ -121,7 +121,9 @@ Restart KOReader after copying.
 
 Foreign-language passages are precomputed once while the bridge builds the Book Index. The translation index is delivered in the existing Book Index response and stored in KOReader's per-book Marginalia cache. No BookOrbit feature, EPUB modification, adjacent file, or separate device transfer is required.
 
-**Translate to English is strictly local at reading time.** A cached hit displays immediately and is not auto-captured as an AI lookup. A missing or ambiguous entry displays exactly **No precomputed translation found for this selection.** There is no bridge or network fallback from the Translate action. Other Ask AI modes still use the bridge and retain their existing capture behavior.
+**Translate to English is strictly local at reading time.** A cached hit displays immediately and is not auto-captured as an AI lookup. A missing entry displays exactly **No precomputed translation found for this selection.** There is no bridge or network fallback from the Translate action. Other Ask AI modes still use the bridge and retain their existing capture behavior.
+
+You do not have to select a foreign passage exactly. Selecting part of an indexed passage returns that passage's translation, and dragging past one works too. Overlapping passages are ranked deterministically: the passage covering your whole selection wins, and among several the most specific one is used. Only two genuinely equal alternatives report a miss.
 
 Legacy Book Index caches are backfilled automatically the next time the plugin checks the bridge while online. The resulting index persists on the device for later offline reading. For manual export or inspection, `marginalia translations "/path/to/Book.epub"` can still write the same versioned index as adjacent JSON, but KOReader does not require that file.
 

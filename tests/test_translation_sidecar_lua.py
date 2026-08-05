@@ -319,8 +319,12 @@ assert(sidecar.lookupDocument(valid, "bonjour le monde") == "Hello world")
 local ambiguous = {lua_literal(document(epub, [entry("bonjour le monde", "One"), entry("le monde", "Two")]))}
 local valid2, reason2 = sidecar.validate(ambiguous, arg[1])
 assert(valid2, reason2)
-local hit, miss = sidecar.lookupDocument(valid2, "elle dit bonjour le monde doucement")
-assert(hit == nil and miss == "ambiguous containment")
+-- Overlapping passages are ranked rather than refused: a wide selection
+-- covering both returns the longest covered passage.
+local hit, entry2 = sidecar.lookupDocument(valid2, "elle dit bonjour le monde doucement")
+assert(hit == "One", tostring(hit) .. " / " .. tostring(entry2))
+-- A selection inside both resolves to the tightest containing passage.
+assert(sidecar.lookupDocument(valid2, "monde") == "Two")
 """,
         str(epub),
     )

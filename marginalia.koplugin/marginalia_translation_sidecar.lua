@@ -204,15 +204,28 @@ function TranslationSidecar.load(epub_path, opts)
     return value, reason
 end
 
+-- A reader's selection rarely matches an indexed span exactly, so containment
+-- is checked in both directions. Boundaries must be real word edges: the
+-- normalized form keeps interior punctuation ("l'arte", "monde,"), so a
+-- neighbouring comma or apostrophe is just as valid an edge as a space.
+local word_edge_characters = {}
+for index = 1, #"'\".,!?;:-()[]{}" do
+    word_edge_characters[("'\".,!?;:-()[]{}"):sub(index, index)] = true
+end
+
+local function isWordEdge(character)
+    return character == "" or character == " " or word_edge_characters[character] == true
+end
+
 local function phraseContains(longer, shorter)
     if #longer <= #shorter then return false end
     local start = 1
     while true do
         local first, last = longer:find(shorter, start, true)
         if not first then return false end
-        local left_ok = first == 1 or longer:sub(first - 1, first - 1) == " "
-        local right_ok = last == #longer or longer:sub(last + 1, last + 1) == " "
-        if left_ok and right_ok then return true end
+        local left = first == 1 and "" or longer:sub(first - 1, first - 1)
+        local right = last == #longer and "" or longer:sub(last + 1, last + 1)
+        if isWordEdge(left) and isWordEdge(right) then return true end
         start = first + 1
     end
 end
@@ -238,6 +251,8 @@ local function lookupDocumentInternal(document, selection)
 
     local match
     local matched_source
+    local matched_covers = false
+    local ambiguous = false
     local count = 0
     for _, entry in pairs(document.translations) do
         count = count + 1
@@ -246,15 +261,44 @@ local function lookupDocumentInternal(document, selection)
             return nil, "invalid document"
         end
         local source = entry.normalized_source
-        if source ~= normalized
-            and (phraseContains(normalized, source) or phraseContains(source, normalized)) then
-            if matched_source ~= nil and matched_source ~= source then
-                return nil, "ambiguous containment"
+        -- covers: the indexed passage contains the whole selection.
+        -- within: the selection contains the indexed passage.
+        local covers = source ~= normalized and phraseContains(source, normalized)
+        local within = source ~= normalized and phraseContains(normalized, source)
+        if covers or within then
+            -- Overlapping passages are normal: Lolita indexes "ça" plus several
+            -- longer phrases containing it. Refusing to choose left the reader
+            -- with no translation at all, so rank deterministically instead.
+            --
+            -- A passage covering the ENTIRE selection explains everything that
+            -- was selected, so it always beats a passage that merely sits
+            -- inside the selection -- otherwise selecting part of a long
+            -- passage would return an incidental short word inside it. Among
+            -- covering passages the shortest is the most precise gloss; among
+            -- contained passages the longest explains the most.
+            local better
+            if matched_source == nil then
+                better = true
+            elseif source == matched_source then
+                better = false
+            elseif covers ~= matched_covers then
+                better = covers
+            elseif covers then
+                better = #source < #matched_source
+            else
+                better = #source > #matched_source
             end
-            match = entry
-            matched_source = source
+
+            if better then
+                match, matched_source, matched_covers, ambiguous = entry, source, covers, false
+            elseif source ~= matched_source
+                and covers == matched_covers
+                and #source == #matched_source then
+                ambiguous = true
+            end
         end
     end
+    if ambiguous then return nil, "ambiguous containment" end
     if match then return match.translation, match end
     return nil, "translation not found"
 end

@@ -109,7 +109,9 @@ Open any EPUB in KOReader. marginalia silently requests a Book Index in the back
 
 **Select text → Ask AI:** Who/What is this?, Explain, and Story context use the bridge. Their answers appear and — with Auto-capture on (default) — the passage is highlighted with the AI answer as the note.
 
-**Select text → Translate to English:** translation is strictly local and offline. A cached Book Index hit appears immediately and is not auto-captured as an AI lookup. A missing or ambiguous entry shows exactly **No precomputed translation found for this selection.** It never falls back to the bridge or network.
+**Select text → Translate to English:** translation is strictly local and offline. A cached Book Index hit appears immediately and is not auto-captured as an AI lookup. A missing entry shows exactly **No precomputed translation found for this selection.** It never falls back to the bridge or network.
+
+Selections do not have to match an indexed passage exactly: a sub-phrase of a passage, or a wider drag containing one, both resolve. Word boundaries respect punctuation, so selecting `bonjour le monde` out of *bonjour le monde, mon ami* works.
 
 **Top menu → marginalia → Ask AI:** freeform chat grounded in your reading position. Tap **Save as Note** to save the Q&A as a standalone Obsidian note, or **To Book Note** to append it to the book's vault note.
 

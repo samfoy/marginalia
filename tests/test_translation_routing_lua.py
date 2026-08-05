@@ -165,7 +165,10 @@ assert(shown[2].width == 920 and shown[2].height == 624)
         {
             "version": 1,
             "target_language": "English",
-            "translations": dict([entry("selected words"), entry("more selected text")]),
+            # Deliberately unrelated to the "selected" selection below. A
+            # sub-phrase of an indexed passage now resolves by design, so a
+            # miss case must share no words with any entry.
+            "translations": dict([entry("bonjour le monde"), entry("chocolat glace")]),
         },
     ],
 )
