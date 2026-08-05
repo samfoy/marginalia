@@ -56,6 +56,16 @@ Config is saved to `~/.marginalia.env` and loaded automatically by `marginalia s
 
 ## Install the KOReader plugin
 
+### Via the KOReader App Store (recommended)
+
+1. Install and open [`omer-faruq/appstore.koplugin`](https://github.com/omer-faruq/appstore.koplugin).
+2. Open **App Store → Plugins → gear/settings → Install plugin from URL**.
+3. Enter `samfoy/marginalia`, install the plugin, and restart KOReader.
+
+For later releases, choose **Check plugin updates** and update the linked repository. This direct owner/repository URL is the supported installation path; it does not depend on GitHub topic discovery. Updates replace the plugin code but preserve Marginalia settings, cache, and queued notes because KOReader stores them outside `marginalia.koplugin/`.
+
+Manual alternatives:
+
 ### Via ADB (Android/Boox)
 
 ```bash
@@ -74,6 +84,12 @@ scp -r marginalia.koplugin user@device:/sdcard/koreader/plugins/
 
 Restart KOReader after copying.
 
+### Offline translations
+
+No separate setup is required. When the bridge builds a Book Index, it also precomputes marked foreign-language passages and includes them in the same response. KOReader stores the translation index in Marginalia's existing per-book settings cache, so later selection lookups are instant and offline.
+
+Legacy cached books are backfilled automatically during the next online freshness check. BookOrbit does not need to know about translations, and no adjacent sidecar needs to be copied to the device. The optional `marginalia translations "/path/to/Book.epub"` command remains available only for manual JSON export or inspection.
+
 ---
 
 ## Configure the plugin
@@ -91,7 +107,9 @@ Restart KOReader after copying.
 
 Open any EPUB in KOReader. marginalia silently requests a Book Index in the background — once done it's cached for instant access on future opens.
 
-**Select text → Ask AI:** pick a mode (Who/What is this?, Explain, Story context, Translate). The answer appears and — with Auto-capture on (default) — the passage is highlighted in the book with the AI answer as the highlight note.
+**Select text → Ask AI:** Who/What is this?, Explain, and Story context use the bridge. Their answers appear and — with Auto-capture on (default) — the passage is highlighted with the AI answer as the note.
+
+**Select text → Translate to English:** translation is strictly local and offline. A cached Book Index hit appears immediately and is not auto-captured as an AI lookup. A missing or ambiguous entry shows exactly **No precomputed translation found for this selection.** It never falls back to the bridge or network.
 
 **Top menu → marginalia → Ask AI:** freeform chat grounded in your reading position. Tap **Save as Note** to save the Q&A as a standalone Obsidian note, or **To Book Note** to append it to the book's vault note.
 

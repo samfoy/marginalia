@@ -1,10 +1,14 @@
 """test_server_routes.py — integration tests against a live ThreadingHTTPServer."""
 
 import json
+import hashlib
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -223,6 +227,269 @@ class TestChatRoute:
 def test_unknown_route_returns_404(live_server):
     code, _ = _get(live_server["port"], "/no-such-endpoint")
     assert code == 404
+
+
+def test_cached_book_index_serves_translation_index(live_server, monkeypatch):
+    import xray_cache as xc
+
+    cached = {
+        "book": {"epub_hash": "abc", "title": "Cached Book"},
+        "xray": {"characters": []},
+        "mentions": {},
+        "generated_at": "2026-08-04T00:00:00Z",
+        "translation_index": {
+            "version": 1,
+            "target_language": "English",
+            "generated_at": "2026-08-04T00:00:00Z",
+            "source_epub": {
+                "filename": "Cached.epub", "size_bytes": 1,
+                "sha256": "b" * 64, "koreader_partial_md5": "a" * 32,
+            },
+            "translations": {"deadbeef": {
+                "normalized_source": "bonjour", "original_source": "Bonjour",
+                "source_language": "French", "translation": "hello",
+            }},
+        },
+    }
+    monkeypatch.setattr(xc, "find_by_title_author", lambda *_args: cached)
+    monkeypatch.setattr(xc, "find_all_by_title_author", lambda *_args: [cached])
+
+    code, body = _post(live_server["port"], "/book-index/init", {"book_title": "Cached Book"})
+
+    assert code == 200
+    assert body["translation_index"] == cached["translation_index"]
+
+
+def test_device_hash_selects_matching_cached_edition(live_server, monkeypatch):
+    import xray_cache as xc
+
+    def record(name, partial):
+        return {
+            "book": {"epub_hash": name, "title": "Same Title"},
+            "xray": {"characters": []},
+            "mentions": {},
+            "generated_at": "2026-08-04T00:00:00Z",
+            "translation_index": {
+                "version": 1,
+                "target_language": "English",
+                "generated_at": "2026-08-04T00:00:00Z",
+                "source_epub": {
+                    "filename": name + ".epub", "size_bytes": 1,
+                    "sha256": "a" * 64, "koreader_partial_md5": partial,
+                },
+                "translations": {},
+            },
+        }
+
+    first = record("first", "1" * 32)
+    second = record("second", "2" * 32)
+    monkeypatch.setattr(xc, "find_all_by_title_author", lambda *_args: [first, second])
+
+    code, body = _post(live_server["port"], "/book-index/init", {
+        "book_title": "Same Title",
+        "device_partial_md5": "2" * 32,
+    })
+
+    assert code == 200
+    assert body["book"]["epub_hash"] == "second"
+
+
+def test_device_hash_selects_matching_legacy_epub_path(live_server, tmp_path, monkeypatch):
+    import xray_cache as xc
+
+    first_epub = tmp_path / "First.epub"
+    second_epub = tmp_path / "Second.epub"
+    first_epub.write_bytes(b"first edition")
+    second_epub.write_bytes(b"second edition")
+    records = [
+        {"book": {"epub_hash": hashlib.md5(first_epub.read_bytes()).hexdigest(), "title": "Same", "epub_path": str(first_epub)}, "strategy": "test", "xray": {}},
+        {"book": {"epub_hash": hashlib.md5(second_epub.read_bytes()).hexdigest(), "title": "Same", "epub_path": str(second_epub)}, "strategy": "test", "xray": {}},
+    ]
+    monkeypatch.setattr(xc, "find_all_by_title_author", lambda *_args: records)
+    with server._jobs_lock:
+        server._xray_jobs["matching-edition"] = {
+            "kind": "translations", "book_hash": records[1]["book"]["epub_hash"],
+            "status": "pending", "record": None, "error": None,
+        }
+
+    code, body = _post(live_server["port"], "/book-index/init", {
+        "book_title": "Same",
+        "device_partial_md5": server._koreader_partial_md5(second_epub),
+    })
+
+    assert code == 202
+    assert body["job_id"] == "matching-edition"
+    with server._jobs_lock:
+        server._xray_jobs.pop("matching-edition", None)
+
+
+def test_invalid_cached_translation_index_is_not_returned_current(live_server, tmp_path, monkeypatch):
+    import xray_cache as xc
+
+    epub = tmp_path / "Book.epub"
+    epub.write_bytes(b"book")
+    cached = {
+        "book": {"epub_hash": hashlib.md5(epub.read_bytes()).hexdigest(), "title": "Book", "epub_path": str(epub)},
+        "strategy": "test",
+        "xray": {"characters": []},
+        "generated_at": "2026-08-04T00:00:00Z",
+        "translation_index": {"version": 99},
+    }
+    monkeypatch.setattr(xc, "find_all_by_title_author", lambda *_args: [cached])
+    with server._jobs_lock:
+        server._xray_jobs["deferred-invalid-index"] = {
+            "kind": "translations",
+            "book_hash": cached["book"]["epub_hash"],
+            "status": "pending",
+            "record": None,
+            "error": None,
+        }
+
+    code, body = _post(live_server["port"], "/book-index/init", {
+        "book_title": "Book",
+        "device_generated_at": "9999-01-01T00:00:00Z",
+    })
+
+    assert code == 202
+    assert body["status"] == "generating"
+    with server._jobs_lock:
+        server._xray_jobs.pop(body["job_id"], None)
+
+
+def test_legacy_cached_book_backfills_translation_index(live_server, tmp_path, monkeypatch):
+    import server as srv
+    import xray_cache as xc
+
+    epub = tmp_path / "Legacy.epub"
+    epub.write_bytes(b"epub")
+    book_hash = hashlib.md5(epub.read_bytes()).hexdigest()
+    cached = {
+        "book": {"epub_hash": book_hash, "title": "Legacy", "epub_path": str(epub)},
+        "xray": {"characters": []},
+        "mentions": {},
+        "generated_at": "2026-08-04T00:00:00Z",
+    }
+    saved = []
+    monkeypatch.setattr(xc, "find_by_title_author", lambda *_args: cached)
+    monkeypatch.setattr(xc, "find_all_by_title_author", lambda *_args: [cached])
+    latest = {**cached, "last_reading_pct": 73}
+    def merge(book_hash, translation_index):
+        record = {**latest, "translation_index": translation_index}
+        saved.append((book_hash, record))
+        return record
+    monkeypatch.setattr(xc, "merge_translation_index", merge)
+    monkeypatch.setattr(srv, "build_translation_index", lambda _path: {
+        "version": 1,
+        "target_language": "English",
+        "source_epub": {"koreader_partial_md5": srv._koreader_partial_md5(epub)},
+        "translations": {},
+    })
+
+    code, body = _post(live_server["port"], "/book-index/init", {"book_title": "Legacy"})
+    assert code == 202
+    for _ in range(50):
+        code, raw_status = _get(live_server["port"], body["poll_url"])
+        status = json.loads(raw_status)
+        if status["status"] == "ready":
+            break
+        time.sleep(0.01)
+    assert code == 200
+    assert status["status"] == "ready"
+    assert status["translation_index"]["version"] == 1
+    assert status["generated_at"] >= cached["generated_at"]
+    assert saved[0][0] == book_hash
+    assert saved[0][1]["translation_index"]["version"] == 1
+    assert saved[0][1]["last_reading_pct"] == 73
+
+
+def test_legacy_cache_rejects_wrong_server_epub(live_server, tmp_path, monkeypatch):
+    import xray_cache as xc
+
+    wrong_epub = tmp_path / "Wrong.edition.epub"
+    wrong_epub.write_bytes(b"different edition")
+    cached = {
+        "book": {"epub_hash": hashlib.md5(b"device edition").hexdigest(), "title": "Same Title", "epub_path": str(wrong_epub)},
+        "xray": {"characters": []},
+        "generated_at": "2026-08-04T00:00:00Z",
+    }
+    monkeypatch.setattr(xc, "find_by_title_author", lambda *_args: cached)
+    monkeypatch.setattr(xc, "find_all_by_title_author", lambda *_args: [cached])
+    monkeypatch.setattr(server, "find_epub", lambda *_args: {"epub_path": str(wrong_epub)})
+
+    code, body = _post(live_server["port"], "/book-index/init", {
+        "book_title": "Same Title",
+        "device_partial_md5": hashlib.md5(b"device edition").hexdigest(),
+    })
+
+    assert code == 200
+    assert body["status"] == "needs_epub"
+    assert "translation_index" not in cached
+
+
+def test_cache_miss_rejects_different_calibre_edition(live_server, tmp_path, monkeypatch):
+    import xray_cache as xc
+
+    calibre_epub = tmp_path / "Calibre.epub"
+    calibre_epub.write_bytes(b"calibre edition")
+    monkeypatch.setattr(xc, "find_all_by_title_author", lambda *_args: [])
+    monkeypatch.setattr(server, "find_epub", lambda *_args: {"epub_path": str(calibre_epub)})
+
+    code, body = _post(live_server["port"], "/book-index/init", {
+        "book_title": "Same Title",
+        "device_partial_md5": hashlib.md5(b"device edition").hexdigest(),
+    })
+
+    assert code == 200
+    assert body["status"] == "needs_epub"
+
+
+def test_translation_job_claim_is_atomic():
+    import server as srv
+
+    book_hash = "atomic-translation-job"
+    with srv._jobs_lock:
+        srv._xray_jobs.clear()
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        claims = list(executor.map(lambda _: srv._claim_translation_job(book_hash), range(24)))
+
+    assert sum(created for _job_id, created in claims) == 1
+    assert len({job_id for job_id, _created in claims}) == 1
+    with srv._jobs_lock:
+        srv._xray_jobs.clear()
+
+
+def test_epub_job_fails_when_required_translation_generation_fails(tmp_path, monkeypatch):
+    import server as srv
+
+    epub = tmp_path / "Book.epub"
+    epub.write_bytes(b"epub")
+    job_id = "translation-failure"
+    with srv._jobs_lock:
+        srv._xray_jobs[job_id] = {"status": "pending", "record": None, "error": None}
+
+    content = SimpleNamespace(
+        title="Book", author="Author", series=None, series_index=None,
+        total_chars=4, chapters=[], file_hash="hash", epub_path=str(epub),
+    )
+    monkeypatch.setattr(srv, "extract_epub", lambda _path: content)
+    monkeypatch.setattr(srv, "generate", lambda _content: ({"characters": []}, "test"))
+    monkeypatch.setattr(srv.series, "resolve", lambda **_kwargs: None)
+    monkeypatch.setattr(srv.mentions, "build_mentions", lambda *_args: {})
+    monkeypatch.setattr(srv, "build_record", lambda *_args: {"book": {"epub_hash": "hash"}, "xray": {}})
+    monkeypatch.setattr(srv, "build_translation_index", lambda _path: (_ for _ in ()).throw(RuntimeError("translation failed")))
+    saved = []
+    removed = []
+    monkeypatch.setattr(srv.xray_cache, "save", lambda *_args: saved.append(True))
+    monkeypatch.setattr(srv.xray_cache, "remove_knowledge_by_title", lambda *args: removed.append(args))
+
+    srv._run_xray_job_from_epub(job_id, str(epub), "Book", "Author", 0)
+
+    with srv._jobs_lock:
+        job = srv._xray_jobs.pop(job_id)
+    assert job["status"] == "failed"
+    assert "translation failed" in job["error"]
+    assert saved == []
+    assert removed == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

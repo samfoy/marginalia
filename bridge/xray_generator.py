@@ -64,10 +64,14 @@ GPT_SINGLE_SHOT_LIMIT = 800_000
 GPT_EMPTY_RETRIES     = int(os.environ.get("MARGINALIA_GPT_RETRIES", "3"))
 
 # Large context requests can take several minutes
-_BEDROCK_CONFIG = BotocoreConfig(
-    read_timeout=600,        # 10 min — large books take time
-    connect_timeout=30,
-    retries={"max_attempts": 2, "mode": "standard"},
+_BEDROCK_CONFIG = (
+    BotocoreConfig(
+        read_timeout=600,        # 10 min — large books take time
+        connect_timeout=30,
+        retries={"max_attempts": 2, "mode": "standard"},
+    )
+    if _BEDROCK_AVAILABLE
+    else None
 )
 
 SINGLE_SHOT_LIMIT = 760_000    # chars — single Bedrock call (~190K tokens, fits 200K ctx)

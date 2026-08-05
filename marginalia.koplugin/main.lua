@@ -30,6 +30,7 @@ local Cache     = require("marginalia_cache")
 local Context   = require("marginalia_context")
 local XRayUI    = require("marginalia_xray")
 local Queue     = require("marginalia_queue")
+local TranslationSidecar = require("marginalia_translation_sidecar")
 
 local PiRead = WidgetContainer:extend{
     name = "marginalia",
@@ -39,6 +40,9 @@ local PiRead = WidgetContainer:extend{
     _book_hash   = nil,    -- epub hash (from bridge)
     _book_meta   = nil,    -- {title, author, series, ...}
     _mentions    = nil,    -- per-entity chapter mention index {name_lower: [{chapter,position_pct,snippet}]}
+    _translation_index = nil, -- precomputed foreign-language translations from the Book Index cache
+    _device_partial_md5 = nil, -- sampled KOReader document hash for edition binding
+    _document_generation = 0, -- invalidates callbacks started for a previous document
     _xray_job_id = nil,    -- pending generation job id
     _poll_handle = nil,    -- UIManager scheduled handle for polling
 }
@@ -174,9 +178,30 @@ function PiRead:onReaderReady()
     self:onDocLoad()
 end
 
+function PiRead:_validatedTranslationIndex(index)
+    local epub_path = self.ui and self.ui.document and self.ui.document.file
+    if not index or type(epub_path) ~= "string" or not epub_path:lower():match("%.epub$") then
+        return nil
+    end
+    local ok, valid = pcall(TranslationSidecar.validate, index, epub_path, {
+        actual_partial_md5 = self._device_partial_md5,
+    })
+    return ok and valid or nil
+end
+
 function PiRead:onDocLoad()
     local s = self:loadSettings()
     if not s.enabled then return end
+    self._translation_index = nil
+    self._device_partial_md5 = nil
+    self._document_generation = (self._document_generation or 0) + 1
+    self._xray_job_id = nil
+    self._xray_job_generation = nil
+    if self._poll_handle then
+        UIManager:unschedule(self._poll_handle)
+        self._poll_handle = nil
+    end
+    local generation = self._document_generation
 
     -- Opportunistically flush any notes saved while offline.
     if Queue.count() > 0 then
@@ -196,6 +221,11 @@ function PiRead:onDocLoad()
     local title  = (props.title)   or ""
     local author = (props.authors) or ""
     if title == "" then return end
+    local epub_path = self.ui and self.ui.document and self.ui.document.file
+    if type(epub_path) == "string" and epub_path:lower():match("%.epub$") then
+        local ok, digest = pcall(util.partialMD5, epub_path)
+        self._device_partial_md5 = ok and digest or nil
+    end
 
     -- Load from device cache immediately (instant)
     local record, hash = Cache.findByTitle(title)
@@ -205,9 +235,11 @@ function PiRead:onDocLoad()
         self._book_hash      = hash or record.book and record.book.epub_hash
         self._book_meta      = record.book
         self._mentions       = record.mentions
+        self._translation_index = self:_validatedTranslationIndex(record.translation_index)
         self._local_gen_at   = record.generated_at or ""
         -- Background freshness check — silently update if Mac has newer version
         UIManager:scheduleIn(3, function()
+            if generation ~= self._document_generation then return end
             self:checkXRayFreshness(title, author)
         end)
         self:_maybeOfferRecap()
@@ -217,12 +249,14 @@ function PiRead:onDocLoad()
     -- No local cache — try bridge
     local reading_pct = self:currentReadingPct()
     UIManager:scheduleIn(2, function()
+        if generation ~= self._document_generation then return end
         self:requestXRay(title, author, reading_pct)
     end)
 end
 
 function PiRead:checkXRayFreshness(title, author)
     if not NetworkMgr:isConnected() then return end
+    local generation = self._document_generation
     local gen_at = self._local_gen_at or ""
     -- Async so a slow network never blocks the UI thread on book open.
     Bridge:xrayInitAsync({
@@ -230,7 +264,9 @@ function PiRead:checkXRayFreshness(title, author)
         book_author         = author,
         reading_pct         = self:currentReadingPct(),
         device_generated_at = gen_at,
+        device_partial_md5  = self._device_partial_md5,
     }, function(resp)
+        if generation ~= self._document_generation then return end
         if not resp then return end
         if resp.status == "current" then
             logger.info("marginalia: Book Index is current for", title)
@@ -242,6 +278,7 @@ function PiRead:checkXRayFreshness(title, author)
             self._book_meta = resp.book
             self._book_hash = resp.book and resp.book.epub_hash
             self._mentions  = resp.mentions
+            self._translation_index = self:_validatedTranslationIndex(resp.translation_index)
             self._local_gen_at = resp.generated_at or ""
             local bh = self._book_hash
             if bh then
@@ -249,13 +286,20 @@ function PiRead:checkXRayFreshness(title, author)
                     xray         = resp.xray,
                     book         = resp.book,
                     mentions     = resp.mentions,
+                    translation_index = resp.translation_index,
                     generated_at = resp.generated_at,
                 })
                 logger.info("marginalia: Device Book Index cache refreshed for", title)
             end
         elseif resp.status == "generating" then
             self._xray_job_id = resp.job_id
+            self._xray_job_generation = generation
             self:schedulePoll()
+        elseif resp.status == "needs_epub" then
+            -- Legacy cache has no translation index and the bridge no longer has
+            -- the EPUB. Re-enter the normal init/upload flow so the open device
+            -- EPUB can be used to build and return a complete cached record.
+            self:requestXRay(title, author, self:currentReadingPct())
         end
     end, function(err)
         logger.warn("marginalia: freshness check error:", err)
@@ -347,13 +391,16 @@ function PiRead:requestXRay(title, author, reading_pct, opts)
     logger.info("marginalia: requesting Book Index for", title)
     self._xray_loading = true
     local retry_after_empty = (opts and opts.retry_after_empty) or 0
+    local generation = self._document_generation
     local init_params = {
         book_title  = title,
         book_author = author,
         reading_pct = reading_pct or 0,
+        device_partial_md5 = self._device_partial_md5,
     }
     if opts and opts.force then init_params.force = true end
     Bridge:xrayInitAsync(init_params, function(resp)
+        if generation ~= self._document_generation then return end
         self._xray_loading = false
         if not resp then return end
         if resp.status == "ready" then
@@ -366,6 +413,7 @@ function PiRead:requestXRay(title, author, reading_pct, opts)
         elseif resp.status == "generating" then
             logger.info("marginalia: Book Index generating, job_id=%s", tostring(resp.job_id))
             self._xray_job_id = resp.job_id
+            self._xray_job_generation = generation
             self:schedulePoll()
             UIManager:show(InfoMessage:new{
                 text    = _("Building Book Index…"),
@@ -388,9 +436,11 @@ function PiRead:requestXRay(title, author, reading_pct, opts)
                 book_author = author,
                 reading_pct = reading_pct or 0,
             }, function(upload_resp)
+                if generation ~= self._document_generation then return end
                 if upload_resp and upload_resp.job_id then
                     logger.info("marginalia: epub uploaded, job_id=%s", tostring(upload_resp.job_id))
                     self._xray_job_id = upload_resp.job_id
+                    self._xray_job_generation = generation
                     self:schedulePoll()
                     UIManager:show(InfoMessage:new{
                         text    = _("Building Book Index…"),
@@ -456,6 +506,12 @@ end
 function PiRead:pollXRayStatus()
     self._poll_handle = nil
     if not self._xray_job_id then return end
+    if self._xray_job_generation ~= self._document_generation then
+        self._xray_job_id = nil
+        self._xray_job_generation = nil
+        return
+    end
+    local generation = self._xray_job_generation
     if not NetworkMgr:isConnected() then
         -- No network, retry later
         self:schedulePoll()
@@ -471,7 +527,8 @@ function PiRead:pollXRayStatus()
 
     if resp.status == "ready" then
         self._xray_job_id = nil
-        self:_storeXRay(resp)
+        self._xray_job_generation = nil
+        self:_storeXRay(resp, generation)
         UIManager:show(InfoMessage:new{
             text    = _("Book Index ready!"),
             timeout = 3,
@@ -479,6 +536,7 @@ function PiRead:pollXRayStatus()
 
     elseif resp.status == "failed" then
         self._xray_job_id = nil
+        self._xray_job_generation = nil
         logger.warn("marginalia: Book Index generation failed:", resp.error)
 
     else
@@ -488,11 +546,13 @@ function PiRead:pollXRayStatus()
     end
 end
 
-function PiRead:_storeXRay(resp)
+function PiRead:_storeXRay(resp, generation)
+    if generation and generation ~= self._document_generation then return false end
     if not resp or not resp.xray then return end
     self._xray      = resp.xray
     self._book_meta = resp.book
     self._mentions  = resp.mentions
+    self._translation_index = self:_validatedTranslationIndex(resp.translation_index)
     local hash      = resp.book and resp.book.epub_hash
     self._book_hash = hash
     -- Save to local device cache
@@ -501,6 +561,7 @@ function PiRead:_storeXRay(resp)
             xray         = resp.xray,
             book         = resp.book,
             mentions     = resp.mentions,
+            translation_index = resp.translation_index,
             generated_at = resp.generated_at,
         })
     end
@@ -683,7 +744,7 @@ function PiRead:hookHighlightDialog()
                     end
                 end
 
-                -- Not in cache — ask bridge
+                -- Not in the Book Index — offer local translation or bridge modes.
                 this:onClose()
                 self:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author, captured)
             end,
@@ -761,6 +822,31 @@ local MODES = {
     { id = "translate", label = _("Translate to English") },
 }
 
+function PiRead:handleModeSelection(text, prev_ctx, next_ctx, book_title, book_author, mode_id, mode_label, captured)
+    if mode_id == "translate" then
+        local translation
+        if self._translation_index then
+            local ok, result = pcall(TranslationSidecar.lookupDocument, self._translation_index, text)
+            if ok then translation = result end
+        end
+        if translation then
+            UIManager:show(TextViewer:new{
+                title  = _("Translate to English"),
+                text   = translation,
+                width  = math.floor(Screen:getWidth()  * 0.92),
+                height = math.floor(Screen:getHeight() * 0.78),
+            })
+        else
+            UIManager:show(InfoMessage:new{
+                text = _("No precomputed translation found for this selection."),
+                timeout = 4,
+            })
+        end
+        return
+    end
+    self:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mode_id, mode_label, captured)
+end
+
 function PiRead:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author, captured)
     local buttons = {}
     for _, mode in ipairs(MODES) do
@@ -768,7 +854,7 @@ function PiRead:showModeDialog(text, prev_ctx, next_ctx, book_title, book_author
         table.insert(buttons, {{ text = mlabel, callback = function()
             UIManager:close(self._mode_dialog)
             self._mode_dialog = nil
-            self:askBridge(text, prev_ctx, next_ctx, book_title, book_author, mid, mlabel, captured)
+            self:handleModeSelection(text, prev_ctx, next_ctx, book_title, book_author, mid, mlabel, captured)
         end }})
     end
     table.insert(buttons, {{ text = _("Cancel"), callback = function()

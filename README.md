@@ -24,7 +24,7 @@ marginalia runs a small bridge server on your computer that your KOReader device
 3. **Syncs with your Obsidian vault** — Ask AI lookups and manual saves create highlights in the book and append formatted entries to the book's vault note.
 
 **Companion features (all spoiler-safe):**
-- **Ask AI** — select text → get an explanation, translation, or context from the bridge
+- **Ask AI** — select text → get an explanation or context from the bridge; Translate to English uses a precomputed local sidecar
 - **AI Wiki** — deep-dive on any character, place, or term from the Book Index
 - **Recap** — "where you left off" summary when returning after a break
 - **Section** — chapter-by-chapter analysis
@@ -96,7 +96,17 @@ marginalia serve   # bridge listens on :7731
 
 ## KOReader plugin
 
-### Install
+### Install with the KOReader App Store (recommended)
+
+Install and open [`omer-faruq/appstore.koplugin`](https://github.com/omer-faruq/appstore.koplugin), then in KOReader:
+
+1. Open **App Store → Plugins → gear/settings → Install plugin from URL**.
+2. Enter `samfoy/marginalia` and install it.
+3. Restart KOReader.
+
+The App Store discovers the canonical nested `marginalia.koplugin/` package in this repository. For later releases, use **Check plugin updates** and update the linked repository. App Store updates replace plugin code but preserve Marginalia settings, cache, and queued notes because KOReader stores them outside the plugin directory.
+
+### Manual alternatives
 
 **Via ADB** (Android/Boox):
 ```bash
@@ -106,6 +116,14 @@ adb push marginalia.koplugin /sdcard/koreader/plugins/marginalia.koplugin
 **Via file manager / MTP:** copy the `marginalia.koplugin/` folder to `koreader/plugins/` on your device.
 
 Restart KOReader after copying.
+
+### Offline translations
+
+Foreign-language passages are precomputed once while the bridge builds the Book Index. The translation index is delivered in the existing Book Index response and stored in KOReader's per-book Marginalia cache. No BookOrbit feature, EPUB modification, adjacent file, or separate device transfer is required.
+
+**Translate to English is strictly local at reading time.** A cached hit displays immediately and is not auto-captured as an AI lookup. A missing or ambiguous entry displays exactly **No precomputed translation found for this selection.** There is no bridge or network fallback from the Translate action. Other Ask AI modes still use the bridge and retain their existing capture behavior.
+
+Legacy Book Index caches are backfilled automatically the next time the plugin checks the bridge while online. The resulting index persists on the device for later offline reading. For manual export or inspection, `marginalia translations "/path/to/Book.epub"` can still write the same versioned index as adjacent JSON, but KOReader does not require that file.
 
 ### Configure
 
@@ -263,7 +281,7 @@ PRs welcome. Key areas:
 - **Ollama / local models** — add a `_invoke_ollama` path in `xray_generator.py`
 - **Streaming responses** — companion endpoints block until complete; requires a protocol change in the KOReader plugin
 - **Windows support** — the bridge is cross-platform; the LaunchAgent is macOS-specific
-- **Plugin distribution** — package as a `.zip` for KOReader's in-app plugin manager
+- **Plugin distribution** — improve App Store packaging and release automation
 
 ---
 
