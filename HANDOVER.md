@@ -233,6 +233,8 @@ adb -s c2fb36b9 logcat -s 'KOReader:*'
 9. **Version must be bumped in three places** — `_meta.lua`, `pyproject.toml`, and the assertion in `tests/test_plugin_package.py`.
 10. **`MARGINALIA_VAULT_HOST` does not exist** — compose uses `MARGINALIA_VAULT` for both the bind mount and the container env var.
 11. **Callbacks are generation-guarded** — `_document_generation` invalidates in-flight callbacks when a different book is opened. Preserve this when adding async work.
+12. **`force` must stay wired end to end** — the plugin's Reindex sends `force=true` and clears only its *device* cache. The bridge must skip **both** `find_all_by_title_author` and `find_by_title_author` (see `_wants_rebuild`), or reindex silently re-serves the same record. This was broken once: Reindex was the only recovery path and it did nothing. Accept bool/int/string forms — the value crosses Lua/rapidjson, and `isinstance(True, int)` is True so check bool first.
+13. **An empty `translation_index` is NOT complete** — zero entries is indistinguishable from a failed build. `_translation_index_valid()` rejects it on purpose. Accepting it created a permanently stuck state: served from cache forever, never retried, device shows no translations. Don't "optimise" this check away.
 
 ---
 
