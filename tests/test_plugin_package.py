@@ -35,7 +35,7 @@ def test_repository_has_one_canonical_app_store_package():
     assert (package / "_meta.lua").is_file()
     assert (package / "main.lua").is_file()
     assert metadata(package)["name"] == "marginalia"
-    assert metadata(package)["version"] == "0.10.0"
+    assert metadata(package)["version"] == "0.10.1"
 
 
 def test_all_plugin_local_requires_are_bundled():
