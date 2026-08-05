@@ -458,7 +458,14 @@ def test_translation_job_claim_is_atomic():
         srv._xray_jobs.clear()
 
 
-def test_epub_job_fails_when_required_translation_generation_fails(tmp_path, monkeypatch):
+def test_epub_job_survives_translation_generation_failure(tmp_path, monkeypatch):
+    """Translations are an enhancement, not a precondition.
+
+    Previously a failing translation build aborted the whole job, so a book
+    whose translation generation hit one bad batch got no Book Index at all and
+    the device reported no translations. The Book Index must now still be
+    produced and cached, with translation_index left as None.
+    """
     import server as srv
 
     epub = tmp_path / "Book.epub"
@@ -486,10 +493,10 @@ def test_epub_job_fails_when_required_translation_generation_fails(tmp_path, mon
 
     with srv._jobs_lock:
         job = srv._xray_jobs.pop(job_id)
-    assert job["status"] == "failed"
-    assert "translation failed" in job["error"]
-    assert saved == []
-    assert removed == []
+    assert job["status"] == "ready"
+    assert job["error"] is None
+    assert job["record"]["translation_index"] is None
+    assert saved == [True]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

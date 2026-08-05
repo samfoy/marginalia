@@ -118,8 +118,10 @@ def test_generate_real_epub_batches_and_writes_deterministic_v1_sidecar(tmp_path
     assert [len(json.loads(p.split("INPUT_JSON:\n", 1)[1])["candidates"]) for p, _ in prompts] == [2, 1]
     assert all("classify" in instructions.lower() and "translate" in instructions.lower() for _, instructions in prompts)
     assert list(document) == [
-        "version", "source_epub", "target_language", "generated_at", "translations"
+        "version", "source_epub", "target_language", "generated_at", "translations",
+        "skipped_candidates",
     ]
+    assert document["skipped_candidates"] == 0
     assert document["version"] == 1
     assert document["target_language"] == "English"
     assert document["generated_at"] == "2026-08-04T12:30:00Z"
@@ -223,7 +225,9 @@ def test_invalid_batches_retry_then_preserve_existing_sidecar(tmp_path, bad_resp
 
     with pytest.raises(ValueError, match="after 3 attempts"):
         translation_sidecar.generate_translation_sidecar(epub, completer=fake_complete, batch_size=2)
-    assert len(calls) == 3
+    # Each batch is retried 3 times; the export raises only after every batch
+    # has been attempted, and must leave the existing sidecar untouched.
+    assert len(calls) == 6
     assert "previous response" in calls[1].lower()
     assert output.read_bytes() == b"existing-valid-sidecar"
     assert not list(tmp_path.glob("*.tmp"))

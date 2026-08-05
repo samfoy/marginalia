@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +14,10 @@ from typing import Callable
 
 import xray_generator
 from epub_extract import TranslationCandidate, extract_translation_candidates
-from translation_text import hash_normalized
+from translation_text import hash_normalized, normalize_source
+
+logger = logging.getLogger(__name__)
+
 
 VERSION = 1
 DEFAULT_BATCH_SIZE = 20
@@ -20,6 +25,43 @@ MAX_BATCH_SIZE = 50
 MAX_ATTEMPTS = 3
 
 Completer = Callable[..., str]
+
+# Books frequently italicise single English words for emphasis (Lolita does
+# this heavily: "of", "if", "no", "you"). Those are not translation candidates,
+# and sending them to the model wastes tokens and adds failure surface.
+#
+# The filter is deliberately narrow: only a SINGLE plain-ASCII word that is a
+# known English function/common word is dropped. Multi-word phrases are always
+# kept, because unaccented foreign phrases like "Au revoir", "Mon Dieu" and
+# "hasta luego" are real translation targets that no length heuristic can
+# distinguish from English emphasis.
+_ASCII_WORD = re.compile(r"^[A-Za-z']+$")
+
+# Common English words an author italicises for stress. Kept explicit rather
+# than length-based so a short foreign word is never silently discarded.
+_ENGLISH_EMPHASIS_WORDS = frozenset("""
+a an and are as at be been but by can did do does for from had has have he her
+his how i if in is it its me my no not of off on or our out she so than that
+the their them then there these they this to too us was we were what when
+where which who why will with would you your yes am been being does doing
+""".split())
+
+
+def is_probable_english_emphasis(source: str) -> bool:
+    """True when a candidate is almost certainly italicised English emphasis.
+
+    Conservative by design: a false positive silently loses a real translation,
+    while a false negative only costs one model slot. Only single common English
+    words are dropped.
+    """
+    normalized = normalize_source(source)
+    if not normalized:
+        return True
+    words = normalized.split()
+    if len(words) != 1 or not _ASCII_WORD.match(words[0]):
+        return False
+    return words[0].lower() in _ENGLISH_EMPHASIS_WORDS
+
 
 _INSTRUCTIONS = """Classify every candidate's source language and translate every non-English
 candidate to English. Return only one JSON object with a translations array. Each item must
@@ -229,23 +271,57 @@ def _atomic_write_json(path: Path, document: dict[str, object]) -> None:
 def build_translation_index(
     epub_path: str | os.PathLike[str], *, completer: Completer | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE, generated_at: datetime | str | None = None,
+    strict: bool = False,
 ) -> dict[str, object]:
-    """Build the translation document embedded in a Book Index record."""
+    """Build the translation document embedded in a Book Index record.
+
+    By default a batch the model cannot answer is dropped and recorded in
+    ``skipped_candidates`` — a partial index is far more useful to a reader than
+    no translations at all. Pass ``strict=True`` to raise instead, which the
+    manual CLI export uses so it never replaces a good sidecar with a
+    degraded one.
+    """
     if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH_SIZE:
         raise ValueError(f"batch_size must be between 1 and {MAX_BATCH_SIZE}")
 
     epub = Path(epub_path)
     candidates = extract_translation_candidates(str(epub))
     complete = completer if completer is not None else xray_generator._complete
+
+    # Drop italicised English emphasis before spending model calls on it.
+    kept = [candidate for candidate in candidates
+            if not is_probable_english_emphasis(candidate.original_source)]
+    filtered_out = len(candidates) - len(kept)
+    if filtered_out:
+        logger.info("Translation index: skipped %d English emphasis candidates for %s",
+                    filtered_out, epub.name)
+
     results: dict[int, dict[str, object]] = {}
-    indexed = list(enumerate(candidates))
+    indexed = list(enumerate(kept))
+    skipped_candidates = 0
+    first_error = ""
     for start in range(0, len(indexed), batch_size):
-        results.update(_complete_batch(indexed[start:start + batch_size], complete))
+        batch = indexed[start:start + batch_size]
+        try:
+            results.update(_complete_batch(batch, complete))
+        except (ValueError, json.JSONDecodeError, TypeError) as error:
+            # A batch the model cannot answer must not discard the batches it
+            # could. Lolita yields ~20 batches; losing all of them because one
+            # candidate never validated is why a whole book showed no
+            # translations at all.
+            skipped_candidates += len(batch)
+            first_error = first_error or str(error)
+            logger.warning(
+                "Translation index: dropping batch of %d candidate(s) for %s: %s",
+                len(batch), epub.name, error,
+            )
+    if strict and skipped_candidates:
+        raise ValueError(first_error)
 
     translations: dict[str, dict[str, object]] = {}
     for candidate_id, candidate in indexed:
-        result = results[candidate_id]
-        if result["is_english"]:
+        result = results.get(candidate_id)
+        if result is None or result["is_english"]:
             continue
         key = hash_normalized(candidate.normalized_source)
         existing = translations.get(key)
@@ -261,6 +337,7 @@ def build_translation_index(
         "target_language": "English",
         "generated_at": _timestamp(generated_at),
         "translations": translations,
+        "skipped_candidates": skipped_candidates,
     }
 
 
@@ -268,13 +345,19 @@ def generate_translation_sidecar(
     epub_path: str | os.PathLike[str], *, completer: Completer | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE, generated_at: datetime | str | None = None,
 ) -> Path:
-    """Generate and atomically refresh an EPUB's adjacent export sidecar."""
+    """Generate and atomically refresh an EPUB's adjacent export sidecar.
+
+    Strict on purpose: this writes a file a user may already rely on, so an
+    incomplete result raises rather than replacing a good sidecar with a
+    partial one.
+    """
     epub = Path(epub_path)
     document = build_translation_index(
         epub,
         completer=completer,
         batch_size=batch_size,
         generated_at=generated_at,
+        strict=True,
     )
     output = sidecar_path(epub)
     _atomic_write_json(output, document)

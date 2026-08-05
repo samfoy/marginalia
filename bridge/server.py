@@ -549,6 +549,27 @@ def _run_translation_index_job(job_id: str, cached: dict, epub_path: str) -> Non
         update("failed", error=str(exc))
 
 
+def _safe_translation_index(epub_path: str) -> dict | None:
+    """Build a translation index without ever failing the Book Index job.
+
+    Translations are an enhancement, not a precondition: a book must still get
+    its Book Index (and RAG, mentions, recap) even when translation generation
+    fails outright. Mirrors the non-fatal treatment of mentions and rag.
+    """
+    try:
+        index = build_translation_index(epub_path)
+    except Exception:
+        logging.exception("translation index build failed (non-fatal): %s", epub_path)
+        return None
+    skipped = index.get("skipped_candidates") or 0
+    if skipped:
+        logging.warning("Translation index for %s is partial: %d candidate(s) skipped",
+                        epub_path, skipped)
+    logging.info("Translation index built for %s: %d entr(ies), %d skipped",
+                 epub_path, len(index.get("translations") or {}), skipped)
+    return index
+
+
 def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> None:
     """Background thread: find book, extract, generate, cache."""
     def update(status: str, **kw):
@@ -597,7 +618,7 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
         record = build_record(content, book_meta, xray, strategy)
         record["mentions"] = mention_idx
         update("generating", progress="Precomputing foreign-language translations")
-        record["translation_index"] = build_translation_index(book_meta["epub_path"])
+        record["translation_index"] = _safe_translation_index(book_meta["epub_path"])
         if reading_pct:
             record["last_reading_pct"] = reading_pct
         xray_cache.save(content.file_hash, record)
@@ -659,7 +680,7 @@ def _run_xray_job_from_epub(job_id: str, epub_path: str, title: str, author: str
         record = build_record(content, book_meta, xray, strategy)
         record["mentions"] = mention_idx
         update("generating", progress="Precomputing foreign-language translations")
-        record["translation_index"] = build_translation_index(epub_path)
+        record["translation_index"] = _safe_translation_index(epub_path)
         if reading_pct:
             record["last_reading_pct"] = reading_pct
         xray_cache.save(content.file_hash, record)
