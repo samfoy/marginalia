@@ -235,6 +235,12 @@ adb -s c2fb36b9 logcat -s 'KOReader:*'
 11. **Callbacks are generation-guarded** — `_document_generation` invalidates in-flight callbacks when a different book is opened. Preserve this when adding async work.
 12. **`force` must stay wired end to end** — the plugin's Reindex sends `force=true` and clears only its *device* cache. The bridge must skip **both** `find_all_by_title_author` and `find_by_title_author` (see `_wants_rebuild`), or reindex silently re-serves the same record. This was broken once: Reindex was the only recovery path and it did nothing. Accept bool/int/string forms — the value crosses Lua/rapidjson, and `isinstance(True, int)` is True so check bool first.
 13. **An empty `translation_index` is NOT complete** — zero entries is indistinguishable from a failed build. `_translation_index_valid()` rejects it on purpose. Accepting it created a permanently stuck state: served from cache forever, never retried, device shows no translations. Don't "optimise" this check away.
+14. **The bridge Sam's device talks to is the DOCKER CONTAINER on this server, not the Mac and not the host checkout.** The plugin sets `base_url = https://samfp.tech/marginalia`, and `bridge.lua` **ignores `host`/`port` entirely when `base_url` is set** — so the configured Mac IP is a red herring. Caddy fronts the container; the published port is loopback-only (`127.0.0.1:7731`).
+    - **Source is baked into the image, not mounted.** Editing the repo and committing changes *nothing* until you rebuild: `cd ~/workspace/marginalia && sg docker -c "docker compose up -d --build"`. A container ran 0.9.0 for 15 days while the repo was at 0.10.3, so every "fix" was invisible to the device.
+    - **Always confirm the deployed version before diagnosing a device bug:**
+      `sg docker -c "docker exec marginalia python -c \"import re;print(re.search(r'version = .([^\\\"]+).', open('/app/pyproject.toml').read()).group(1))\""`
+    - The real cache is the `marginalia_cache` volume at `/root/.marginalia/cache` **inside the container**. `~/.marginalia/cache` on the host is empty and misleading.
+    - Authed probe: `curl -H "X-Marginalia-Token: $TOKEN" https://samfp.tech/marginalia/ping` (token from `.env`; unauthenticated requests get 403).
 
 ---
 
