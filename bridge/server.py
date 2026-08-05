@@ -470,10 +470,34 @@ def _epub_matches_cache(epub_path: str, book_hash: str) -> bool:
         return False
 
 
+def _wants_rebuild(req: dict) -> bool:
+    """True when the client asked to rebuild instead of reusing the cache.
+
+    The plugin's Reindex action clears its own device cache and sends
+    force=true. The bridge previously ignored the flag entirely, so a reindex
+    just re-served the same cached record -- there was no way to recover a book
+    whose translation index was missing, empty, or partial.
+    """
+    value = req.get("force")
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return False
+
+
 def _translation_index_valid(index: object, device_partial_md5: str = "") -> bool:
     if not isinstance(index, dict) or index.get("version") != 1:
         return False
     if index.get("target_language") != "English" or not isinstance(index.get("translations"), dict):
+        return False
+    # An index with no entries is indistinguishable from a failed or skipped
+    # build, so it must not count as complete. Treating it as valid made the
+    # failure permanent: the bridge kept serving the empty index from cache and
+    # never retried, so the device reported no translations forever.
+    if not index["translations"]:
         return False
     if not isinstance(index.get("generated_at"), str) or not index["generated_at"]:
         return False
@@ -1195,8 +1219,12 @@ class Handler(BaseHTTPRequestHandler):
         if not title:
             self.send_error(400, "Missing book_title"); return
 
+        force_rebuild = _wants_rebuild(req)
+
         # ── Check cache first ──────────────────────────────────────────────────
-        cached_records = xray_cache.find_all_by_title_author(title, author)
+        cached_records = [] if force_rebuild else xray_cache.find_all_by_title_author(title, author)
+        if force_rebuild:
+            logging.info("Book Index rebuild requested (force), bypassing cache: %s", title)
         if device_partial_md5:
             cached = next((record for record in cached_records
                            if _translation_index_valid(record.get("translation_index"), device_partial_md5)), None)
@@ -1207,7 +1235,7 @@ class Handler(BaseHTTPRequestHandler):
                 cached = next((record for record in cached_records
                                if record.get("strategy") != "knowledge_only"), None)
         else:
-            cached = xray_cache.find_by_title_author(title, author)
+            cached = None if force_rebuild else xray_cache.find_by_title_author(title, author)
         if cached:
             logging.info("Book Index cache HIT: %s", title)
             if reading_pct:

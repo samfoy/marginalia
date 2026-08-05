@@ -260,6 +260,67 @@ def test_cached_book_index_serves_translation_index(live_server, monkeypatch):
     assert body["translation_index"] == cached["translation_index"]
 
 
+def test_force_reindex_bypasses_the_cache_entirely(live_server, monkeypatch):
+    """Reindex must rebuild, not re-serve the record that was already wrong.
+
+    Sam reindexed Lolita repeatedly and kept getting a record with no
+    translations: the plugin sent force=true but the bridge ignored it and
+    answered from the same cached record every time.
+    """
+    import xray_cache as xc
+
+    lookups = []
+    monkeypatch.setattr(xc, "find_by_title_author",
+                        lambda *args: lookups.append("one") or None)
+    monkeypatch.setattr(xc, "find_all_by_title_author",
+                        lambda *args: lookups.append("all") or [])
+    monkeypatch.setattr(server, "find_epub", lambda *args: None)
+
+    code, body = _post(live_server["port"], "/book-index/init",
+                       {"book_title": "Lolita", "force": True})
+
+    assert code == 200
+    assert body["status"] == "needs_epub"
+    assert lookups == [], f"force still consulted the cache: {lookups}"
+
+
+def test_cached_translation_index_with_no_entries_is_rebuilt(live_server, monkeypatch):
+    """An empty index is indistinguishable from a failed build.
+
+    Serving it as complete made the failure permanent, because the bridge kept
+    answering from cache and never retried.
+    """
+    import xray_cache as xc
+
+    cached = {
+        "book": {"epub_hash": "empty", "title": "Lolita", "epub_path": "/missing.epub"},
+        "xray": {"characters": []},
+        "mentions": {},
+        "strategy": "epub_text",
+        "generated_at": "2026-08-04T00:00:00Z",
+        "translation_index": {
+            "version": 1,
+            "target_language": "English",
+            "generated_at": "2026-08-04T00:00:00Z",
+            "source_epub": {
+                "filename": "Lolita.epub", "size_bytes": 1,
+                "sha256": "b" * 64, "koreader_partial_md5": "a" * 32,
+            },
+            "translations": {},
+        },
+    }
+    monkeypatch.setattr(xc, "find_by_title_author", lambda *_args: cached)
+    monkeypatch.setattr(xc, "find_all_by_title_author", lambda *_args: [cached])
+    monkeypatch.setattr(xc, "update_reading_pct", lambda *_args: None)
+    monkeypatch.setattr(server, "find_epub", lambda *_args: None)
+
+    code, body = _post(live_server["port"], "/book-index/init",
+                       {"book_title": "Lolita", "device_partial_md5": "a" * 32})
+
+    assert code == 200
+    assert body["status"] != "ready", "empty index served as a complete one"
+
+
 def test_device_hash_selects_matching_cached_edition(live_server, monkeypatch):
     import xray_cache as xc
 
@@ -277,7 +338,17 @@ def test_device_hash_selects_matching_cached_edition(live_server, monkeypatch):
                     "filename": name + ".epub", "size_bytes": 1,
                     "sha256": "a" * 64, "koreader_partial_md5": partial,
                 },
-                "translations": {},
+                # A non-empty index: this test is about picking the edition that
+                # matches the device, and an empty index is deliberately treated
+                # as incomplete elsewhere.
+                "translations": {
+                    "abcd1234": {
+                        "normalized_source": "bonjour",
+                        "original_source": "Bonjour",
+                        "source_language": "French",
+                        "translation": "hello",
+                    }
+                },
             },
         }
 
