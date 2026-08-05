@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import hashlib
 from pathlib import Path
 
 import pytest
 
 from translation_text import lookup_key, normalize_source
+from translation_sidecar import _koreader_partial_md5
 
 
 ROOT = Path(__file__).parent.parent
@@ -27,6 +29,8 @@ def lua_literal(value):
         return repr(value)
     if isinstance(value, str):
         return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+    if isinstance(value, bytes):
+        return '"' + "".join(f"\\{byte:03d}" for byte in value) + '"'
     if isinstance(value, list):
         return "{" + ",".join(lua_literal(item) for item in value) + "}"
     if isinstance(value, dict):
@@ -50,7 +54,8 @@ def document(epub: Path, entries: list[tuple[str, dict]] | None = None) -> dict:
         "source_epub": {
             "filename": epub.name,
             "size_bytes": epub.stat().st_size,
-            "sha256": "a" * 64,
+            "sha256": hashlib.sha256(epub.read_bytes()).hexdigest(),
+            "koreader_partial_md5": _koreader_partial_md5(epub),
         },
         "target_language": "English",
         "generated_at": "2026-08-04T00:00:00Z",
@@ -60,8 +65,28 @@ def document(epub: Path, entries: list[tuple[str, dict]] | None = None) -> dict:
 
 def run_lua(body: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     assert LUA is not None, "host Lua is required"
+    digests = {}
+    attributes = {}
+    partial_md5 = {}
+    for value in args:
+        path = Path(value)
+        if path.is_file():
+            raw = path.read_bytes()
+            digests[raw] = hashlib.sha256(raw).hexdigest()
+            stat = path.stat()
+            attributes[str(path)] = {
+                "dev": stat.st_dev, "ino": stat.st_ino, "size": stat.st_size,
+                "modification": stat.st_mtime_ns, "change": stat.st_ctime_ns,
+            }
+            partial_md5[str(path)] = _koreader_partial_md5(path)
     script = (
         f'package.path = {lua_literal(str(PLUGIN_DIR))} .. "/?.lua;" .. package.path\n'
+        + f"local __digests = {lua_literal(digests)}\n"
+        + f"local __attributes = {lua_literal(attributes)}\n"
+        + f"local __partial_md5 = {lua_literal(partial_md5)}\n"
+        + "package.preload['libs/libkoreader-lfs'] = function() return { attributes = function(path) return __attributes[path] end } end\n"
+        + "package.preload['ffi/sha2'] = function() return { sha256 = function() local parts = {}; local function partial(chunk) if chunk ~= nil then parts[#parts+1] = chunk; return partial end return assert(__digests[table.concat(parts)]) end; return partial end } end\n"
+        + "package.preload['util'] = function() return { partialMD5 = function(path) return assert(__partial_md5[path]) end } end\n"
         + body
     )
     result = subprocess.run(
@@ -69,6 +94,7 @@ def run_lua(body: str, *args: str, check: bool = True) -> subprocess.CompletedPr
         input=script,
         text=True,
         capture_output=True,
+        timeout=30,
     )
     if check and result.returncode:
         pytest.fail(f"Lua failed ({result.returncode}):\n{result.stderr}\n{result.stdout}")
@@ -100,6 +126,38 @@ assert(valid, reason)
 local translation, found = sidecar.lookupDocument(valid, "  bonjour le monde  ")
 assert(translation == "Hello world")
 assert(found.original_source == "“Bonjour   le monde!”")
+""",
+        str(epub),
+    )
+
+
+def test_same_size_modified_epub_is_rejected_by_partial_md5(tmp_path):
+    epub = tmp_path / "Novel.epub"
+    epub.write_bytes(b"first")
+    doc = document(epub)
+    epub.write_bytes(b"other")
+    run_lua(
+        f"""
+local sidecar = require("marginalia_translation_sidecar")
+local valid, reason = sidecar.validate({lua_literal(doc)}, arg[1])
+assert(valid == nil and reason == "source EPUB hash mismatch")
+""",
+        str(epub),
+    )
+
+
+def test_supplied_partial_md5_still_requires_matching_size(tmp_path):
+    epub = tmp_path / "Novel.epub"
+    epub.write_bytes(b"epub")
+    doc = document(epub)
+    doc["source_epub"]["size_bytes"] += 1
+    run_lua(
+        f"""
+local sidecar = require("marginalia_translation_sidecar")
+local valid, reason = sidecar.validate({lua_literal(doc)}, arg[1], {{
+    actual_partial_md5 = {lua_literal(_koreader_partial_md5(epub))},
+}})
+assert(valid == nil and reason == "source EPUB size mismatch")
 """,
         str(epub),
     )
@@ -192,9 +250,9 @@ fixture.source_epub.size_bytes = fixture.source_epub.size_bytes + 1
 local stale, stale_reason = sidecar.load(arg[1], {{ decode = function(_) return fixture end }})
 assert(stale == nil and type(stale_reason) == "string")
 fixture.source_epub.size_bytes = fixture.source_epub.size_bytes - 1
-fixture.source_epub.filename = "Other.epub"
-local wrong_name = sidecar.load(arg[1], {{ decode = function(_) return fixture end }})
-assert(wrong_name == nil)
+fixture.source_epub.koreader_partial_md5 = string.rep("0", 32)
+local wrong_hash = sidecar.load(arg[1], {{ decode = function(_) return fixture end }})
+assert(wrong_hash == nil)
 """,
         str(epub),
     )

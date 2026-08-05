@@ -7,6 +7,7 @@ validated as a whole, and matched through marginalia_translation_text so a
 --]]--
 
 local TranslationText = require("marginalia_translation_text")
+local util = require("util")
 
 local TranslationSidecar = {}
 
@@ -33,13 +34,26 @@ local function validLowerHex(value, length)
         and value:match("^[0-9a-f]+$") ~= nil
 end
 
-local function fileSize(path)
+local function fileIdentity(path, expected_size)
     local file = io.open(path, "rb")
-    if not file then return nil end
+    if not file then return nil, "source EPUB unavailable" end
     local size = file:seek("end")
     file:close()
-    if type(size) ~= "number" then return nil end
-    return size
+    if type(size) ~= "number" then return nil, "source EPUB seek failed" end
+    if size ~= expected_size then
+        return nil, "source EPUB size mismatch"
+    end
+    local ok, digest = pcall(util.partialMD5, path)
+    if not ok or not validLowerHex(digest, 32) then return nil, "source EPUB hash failed" end
+    return digest
+end
+
+local function sizeMatches(path, expected_size)
+    local file = io.open(path, "rb")
+    if not file then return false end
+    local size = file:seek("end")
+    file:close()
+    return size == expected_size
 end
 
 function TranslationSidecar.sidecarPath(epub_path)
@@ -77,19 +91,28 @@ local function validateInternal(document, epub_path, opts)
 
     local source = document.source_epub
     if type(source) ~= "table" then return nil, "missing source_epub" end
-    if not nonEmptyString(source.filename) or source.filename ~= basename(epub_path) then
-        return nil, "source filename mismatch"
-    end
+    if not nonEmptyString(source.filename) then return nil, "missing source filename" end
     if not nonNegativeInteger(source.size_bytes) then
         return nil, "invalid source size"
     end
     if not validLowerHex(source.sha256, 64) then
         return nil, "invalid source sha256"
     end
+    if not validLowerHex(source.koreader_partial_md5, 32) then
+        return nil, "invalid source partial md5"
+    end
 
-    local actual_size = fileSize(epub_path)
-    if actual_size == nil then return nil, "source EPUB unavailable" end
-    if actual_size ~= source.size_bytes then return nil, "source EPUB size mismatch" end
+    local actual_hash, identity_error
+    if validLowerHex(opts.actual_partial_md5, 32) then
+        if not sizeMatches(epub_path, source.size_bytes) then
+            return nil, "source EPUB size mismatch"
+        end
+        actual_hash = opts.actual_partial_md5
+    else
+        actual_hash, identity_error = fileIdentity(epub_path, source.size_bytes)
+    end
+    if not actual_hash then return nil, identity_error end
+    if actual_hash ~= source.koreader_partial_md5 then return nil, "source EPUB hash mismatch" end
 
     if type(document.translations) ~= "table" then
         return nil, "missing translations"

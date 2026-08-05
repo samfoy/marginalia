@@ -52,7 +52,21 @@ def _source_identity(epub_path: Path) -> dict[str, object]:
         "filename": epub_path.name,
         "size_bytes": epub_path.stat().st_size,
         "sha256": digest.hexdigest(),
+        "koreader_partial_md5": _koreader_partial_md5(epub_path),
     }
+
+
+def _koreader_partial_md5(epub_path: Path) -> str:
+    digest = hashlib.md5()
+    offsets = [0] + [1024 << (2 * index) for index in range(11)]
+    with epub_path.open("rb") as epub:
+        for offset in offsets:
+            epub.seek(offset)
+            chunk = epub.read(1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _request_prompt(batch: list[tuple[int, TranslationCandidate]], previous_error: str = "") -> str:
@@ -212,11 +226,11 @@ def _atomic_write_json(path: Path, document: dict[str, object]) -> None:
                 pass
 
 
-def generate_translation_sidecar(
+def build_translation_index(
     epub_path: str | os.PathLike[str], *, completer: Completer | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE, generated_at: datetime | str | None = None,
-) -> Path:
-    """Generate and atomically refresh an EPUB's adjacent translation sidecar."""
+) -> dict[str, object]:
+    """Build the translation document embedded in a Book Index record."""
     if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH_SIZE:
         raise ValueError(f"batch_size must be between 1 and {MAX_BATCH_SIZE}")
 
@@ -241,13 +255,27 @@ def generate_translation_sidecar(
             continue
         translations[key] = _entry(candidate, result)
 
-    document: dict[str, object] = {
+    return {
         "version": VERSION,
         "source_epub": _source_identity(epub),
         "target_language": "English",
         "generated_at": _timestamp(generated_at),
         "translations": translations,
     }
+
+
+def generate_translation_sidecar(
+    epub_path: str | os.PathLike[str], *, completer: Completer | None = None,
+    batch_size: int = DEFAULT_BATCH_SIZE, generated_at: datetime | str | None = None,
+) -> Path:
+    """Generate and atomically refresh an EPUB's adjacent export sidecar."""
+    epub = Path(epub_path)
+    document = build_translation_index(
+        epub,
+        completer=completer,
+        batch_size=batch_size,
+        generated_at=generated_at,
+    )
     output = sidecar_path(epub)
     _atomic_write_json(output, document)
     return output

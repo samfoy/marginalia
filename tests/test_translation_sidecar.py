@@ -76,6 +76,22 @@ def test_sidecar_path_replaces_only_final_extension(tmp_path):
     )
 
 
+def test_build_translation_index_returns_cacheable_document_without_writing(tmp_path):
+    epub = tmp_path / "Book.epub"
+    _write_epub(epub)
+
+    document = translation_sidecar.build_translation_index(
+        epub,
+        completer=_response_for_prompt,
+        generated_at="2026-08-04T12:30:00Z",
+    )
+
+    assert document["version"] == 1
+    assert document["target_language"] == "English"
+    assert document["translations"]
+    assert not translation_sidecar.sidecar_path(epub).exists()
+
+
 def test_generate_real_epub_batches_and_writes_deterministic_v1_sidecar(tmp_path, monkeypatch):
     epub = tmp_path / "A.Book.epub"
     _write_epub(epub)
@@ -111,6 +127,7 @@ def test_generate_real_epub_batches_and_writes_deterministic_v1_sidecar(tmp_path
         "filename": "A.Book.epub",
         "size_bytes": epub.stat().st_size,
         "sha256": hashlib.sha256(epub.read_bytes()).hexdigest(),
+        "koreader_partial_md5": translation_sidecar._koreader_partial_md5(epub),
     }
     assert list(document["translations"]) == [
         hash_normalized("bonjour, mon ami"), hash_normalized("buenas noches")

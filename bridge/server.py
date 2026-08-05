@@ -48,7 +48,9 @@ import logging
 import os
 import re
 import signal
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -67,6 +69,7 @@ except ImportError:
 
 from book_finder import find_epub
 from epub_extract import extract_epub
+from translation_sidecar import build_translation_index, _koreader_partial_md5
 from xray_generator import generate, build_record
 import xray_cache
 import mentions
@@ -436,6 +439,116 @@ _xray_jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 
+def _claim_translation_job(book_hash: str) -> tuple[str, bool]:
+    """Atomically reuse or reserve one translation backfill job per book."""
+    with _jobs_lock:
+        for job_id, job in _xray_jobs.items():
+            if (job.get("kind") == "translations"
+                    and job.get("book_hash") == book_hash
+                    and job.get("status") not in ("ready", "failed")):
+                return job_id, False
+        job_id = str(uuid.uuid4())[:8]
+        _xray_jobs[job_id] = {
+            "kind": "translations",
+            "book_hash": book_hash,
+            "status": "pending",
+            "progress": "Starting translation index",
+            "record": None,
+            "error": None,
+        }
+        return job_id, True
+
+
+def _epub_matches_cache(epub_path: str, book_hash: str) -> bool:
+    try:
+        digest = hashlib.md5()
+        with open(epub_path, "rb") as epub:
+            for chunk in iter(lambda: epub.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == book_hash
+    except OSError:
+        return False
+
+
+def _translation_index_valid(index: object, device_partial_md5: str = "") -> bool:
+    if not isinstance(index, dict) or index.get("version") != 1:
+        return False
+    if index.get("target_language") != "English" or not isinstance(index.get("translations"), dict):
+        return False
+    if not isinstance(index.get("generated_at"), str) or not index["generated_at"]:
+        return False
+    source = index.get("source_epub")
+    if not isinstance(source, dict):
+        return False
+    if not isinstance(source.get("filename"), str) or not source["filename"]:
+        return False
+    if not isinstance(source.get("size_bytes"), int) or source["size_bytes"] < 0:
+        return False
+    if not isinstance(source.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
+        return False
+    partial = source.get("koreader_partial_md5")
+    if not isinstance(partial, str) or not re.fullmatch(r"[0-9a-f]{32}", partial):
+        return False
+    if device_partial_md5 and partial != device_partial_md5:
+        return False
+    for key, entry in index["translations"].items():
+        if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{8}", key):
+            return False
+        if not isinstance(entry, dict):
+            return False
+        for field in ("normalized_source", "original_source", "source_language", "translation"):
+            if not isinstance(entry.get(field), str) or not entry[field]:
+                return False
+    return True
+
+
+def _record_matches_device(record: dict, device_partial_md5: str) -> bool:
+    epub_path = record.get("book", {}).get("epub_path")
+    if not epub_path or not os.path.isfile(epub_path):
+        return False
+    try:
+        return _koreader_partial_md5(Path(epub_path)) == device_partial_md5
+    except OSError:
+        return False
+
+
+def _run_translation_index_job(job_id: str, cached: dict, epub_path: str) -> None:
+    """Backfill translations for a legacy cached Book Index."""
+    def update(status: str, **kw):
+        with _jobs_lock:
+            _xray_jobs[job_id].update({"status": status, **kw})
+
+    try:
+        update("generating", progress="Precomputing foreign-language translations")
+        book_hash = cached["book"]["epub_hash"]
+        snapshot_path = None
+        try:
+            with open(epub_path, "rb") as source, tempfile.NamedTemporaryFile(
+                    suffix=".epub", delete=False) as snapshot:
+                snapshot_path = snapshot.name
+                shutil.copyfileobj(source, snapshot)
+                snapshot.flush()
+                os.fsync(snapshot.fileno())
+            if not _epub_matches_cache(snapshot_path, book_hash):
+                raise ValueError("EPUB changed before translation backfill")
+            translation_index = build_translation_index(snapshot_path)
+            translation_index["source_epub"]["filename"] = Path(epub_path).name
+        finally:
+            if snapshot_path:
+                try:
+                    os.unlink(snapshot_path)
+                except FileNotFoundError:
+                    pass
+        # Generation can take long enough for reading progress or other cache
+        # fields to change. Merge into the latest record instead of writing the
+        # stale snapshot captured by /book-index/init.
+        record = xray_cache.merge_translation_index(book_hash, translation_index)
+        update("ready", record=record, error=None)
+    except Exception as exc:
+        logging.exception("Translation index job %s failed", job_id)
+        update("failed", error=str(exc))
+
+
 def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> None:
     """Background thread: find book, extract, generate, cache."""
     def update(status: str, **kw):
@@ -483,6 +596,8 @@ def _run_xray_job(job_id: str, title: str, author: str, reading_pct: float) -> N
 
         record = build_record(content, book_meta, xray, strategy)
         record["mentions"] = mention_idx
+        update("generating", progress="Precomputing foreign-language translations")
+        record["translation_index"] = build_translation_index(book_meta["epub_path"])
         if reading_pct:
             record["last_reading_pct"] = reading_pct
         xray_cache.save(content.file_hash, record)
@@ -543,9 +658,12 @@ def _run_xray_job_from_epub(job_id: str, epub_path: str, title: str, author: str
         book_meta = {"epub_path": epub_path, "calibre_id": None}
         record = build_record(content, book_meta, xray, strategy)
         record["mentions"] = mention_idx
+        update("generating", progress="Precomputing foreign-language translations")
+        record["translation_index"] = build_translation_index(epub_path)
         if reading_pct:
             record["last_reading_pct"] = reading_pct
         xray_cache.save(content.file_hash, record)
+        xray_cache.remove_knowledge_by_title(title, author)
 
         try:
             rag.build_index(content, content.file_hash)
@@ -721,6 +839,8 @@ class Handler(BaseHTTPRequestHandler):
                 resp["xray"] = _serve_xray(job["record"])
                 resp["book"] = job["record"]["book"]
                 resp["mentions"] = job["record"].get("mentions", {})
+                resp["translation_index"] = job["record"].get("translation_index")
+                resp["generated_at"] = job["record"].get("generated_at")
             self._send_json(200, resp)
         else:
             self.send_error(404)
@@ -1044,16 +1164,64 @@ class Handler(BaseHTTPRequestHandler):
         author = (req.get("book_author") or "").strip()
         reading_pct = float(req.get("reading_pct") or 0)
         device_generated_at = (req.get("device_generated_at") or "").strip()
+        raw_device_partial_md5 = req.get("device_partial_md5")
+        if raw_device_partial_md5 is not None and not isinstance(raw_device_partial_md5, str):
+            self.send_error(400, "Invalid device_partial_md5"); return
+        device_partial_md5 = (raw_device_partial_md5 or "").strip().lower()
+        if device_partial_md5 and not re.fullmatch(r"[0-9a-f]{32}", device_partial_md5):
+            self.send_error(400, "Invalid device_partial_md5"); return
 
         if not title:
             self.send_error(400, "Missing book_title"); return
 
         # ── Check cache first ──────────────────────────────────────────────────
-        cached = xray_cache.find_by_title_author(title, author)
+        cached_records = xray_cache.find_all_by_title_author(title, author)
+        if device_partial_md5:
+            cached = next((record for record in cached_records
+                           if _translation_index_valid(record.get("translation_index"), device_partial_md5)), None)
+            if cached is None:
+                cached = next((record for record in cached_records
+                               if _record_matches_device(record, device_partial_md5)), None)
+            if cached is None:
+                cached = next((record for record in cached_records
+                               if record.get("strategy") != "knowledge_only"), None)
+        else:
+            cached = xray_cache.find_by_title_author(title, author)
         if cached:
             logging.info("Book Index cache HIT: %s", title)
             if reading_pct:
                 xray_cache.update_reading_pct(cached["book"]["epub_hash"], reading_pct)
+            if not _translation_index_valid(cached.get("translation_index"), device_partial_md5):
+                book_hash = cached["book"]["epub_hash"]
+                epub_path = cached.get("book", {}).get("epub_path")
+                if device_partial_md5:
+                    try:
+                        server_partial_md5 = _koreader_partial_md5(Path(epub_path)) if epub_path and os.path.isfile(epub_path) else ""
+                    except OSError:
+                        server_partial_md5 = ""
+                    if server_partial_md5 != device_partial_md5:
+                        self._send_json(200, {"status": "needs_epub"})
+                        return
+                elif not epub_path or not _epub_matches_cache(epub_path, book_hash):
+                    book_meta = find_epub(title, author) or (find_epub(title, "") if author else None)
+                    epub_path = book_meta and book_meta.get("epub_path")
+                if not device_partial_md5 and (not epub_path or not _epub_matches_cache(epub_path, book_hash)):
+                    logging.info("Translation index: no server EPUB for %r, requesting device epub", title)
+                    self._send_json(200, {"status": "needs_epub"})
+                    return
+                job_id, created = _claim_translation_job(book_hash)
+                if created:
+                    threading.Thread(
+                        target=_run_translation_index_job,
+                        args=(job_id, cached, epub_path),
+                        daemon=True,
+                    ).start()
+                self._send_json(202, {
+                    "status": "generating",
+                    "job_id": job_id,
+                    "poll_url": f"/book-index/status/{job_id}",
+                })
+                return
             mac_generated_at = cached.get("generated_at", "")
             # If device already has this version, just confirm it's current
             if device_generated_at and device_generated_at >= mac_generated_at:
@@ -1062,6 +1230,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "ready", "cached": True,
                                    "xray": _serve_xray(cached), "book": cached["book"],
                                    "mentions": cached.get("mentions", {}),
+                                   "translation_index": cached.get("translation_index"),
                                    "generated_at": mac_generated_at})
             return
 
@@ -1074,6 +1243,15 @@ class Handler(BaseHTTPRequestHandler):
             logging.info("Book Index: no Calibre match for %r, requesting device epub", title)
             self._send_json(200, {"status": "needs_epub"})
             return
+        if device_partial_md5:
+            try:
+                calibre_partial_md5 = _koreader_partial_md5(Path(book_meta["epub_path"]))
+            except OSError:
+                calibre_partial_md5 = ""
+            if calibre_partial_md5 != device_partial_md5:
+                logging.info("Book Index: Calibre edition differs from open device EPUB for %r", title)
+                self._send_json(200, {"status": "needs_epub"})
+                return
 
         # Calibre has it — spawn normal background job
         job_id = str(uuid.uuid4())[:8]

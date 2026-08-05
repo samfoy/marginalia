@@ -116,6 +116,104 @@ class TestUpdateReadingPct:
         xray_cache.update_reading_pct("no_such_hash", 50.0)
 
 
+class TestRemoveKnowledgeCache:
+
+    def test_real_epub_supersedes_matching_knowledge_record(self, tmp_cache):
+        knowledge = _make_record(title="Lolita", author="Vladimir Nabokov", book_hash="knowledge")
+        knowledge["strategy"] = "knowledge_only"
+        real = _make_record(title="Lolita", author="Vladimir Nabokov", book_hash="real")
+        xray_cache.save("knowledge", knowledge)
+        xray_cache.save("real", real)
+
+        removed = xray_cache.remove_knowledge_by_title("Lolita", "Vladimir Nabokov")
+
+        assert removed == ["knowledge"]
+        assert xray_cache.load("knowledge") is None
+        assert xray_cache.load("real") is not None
+        assert "knowledge" not in xray_cache.load_index()["books"]
+
+    def test_different_author_knowledge_record_is_preserved(self, tmp_cache):
+        record = _make_record(title="Shared Title", author="Other Author", book_hash="knowledge")
+        record["strategy"] = "knowledge_only"
+        xray_cache.save("knowledge", record)
+
+        assert xray_cache.remove_knowledge_by_title("Shared Title", "Target Author") == []
+        assert xray_cache.load("knowledge") is not None
+
+    def test_empty_author_does_not_delete_attributed_record(self, tmp_cache):
+        record = _make_record(title="Shared Title", author="Known Author", book_hash="knowledge")
+        record["strategy"] = "knowledge_only"
+        xray_cache.save("knowledge", record)
+
+        assert xray_cache.remove_knowledge_by_title("Shared Title", "") == []
+        assert xray_cache.load("knowledge") is not None
+
+    def test_unlink_failure_is_nonfatal_after_index_commit(self, tmp_cache, monkeypatch, caplog):
+        record = _make_record(title="Shared Title", author="", book_hash="knowledge")
+        record["strategy"] = "knowledge_only"
+        xray_cache.save("knowledge", record)
+        tombstone = xray_cache.CACHE_DIR / "knowledge.json.deleting"
+        real_unlink = type(tombstone).unlink
+
+        def fail_target(path, *args, **kwargs):
+            if path == tombstone:
+                raise OSError("unlink blocked")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(type(tombstone), "unlink", fail_target)
+        with caplog.at_level("WARNING"):
+            removed = xray_cache.remove_knowledge_by_title("Shared Title", "")
+
+        assert removed == ["knowledge"]
+        assert "knowledge" not in xray_cache.load_index()["books"]
+        assert "Could not remove superseded cache" in caplog.text
+
+
+class TestMergeTranslationIndex:
+
+    def test_merge_preserves_latest_progress_and_other_fields(self, tmp_cache):
+        record = _make_record(book_hash="merge")
+        xray_cache.save("merge", record)
+        xray_cache.update_reading_pct("merge", 73)
+
+        merged = xray_cache.merge_translation_index("merge", {"version": 1, "translations": {}})
+
+        assert merged["last_reading_pct"] == 73
+        assert merged["translation_index"]["version"] == 1
+        assert merged["generated_at"] >= record["generated_at"]
+        assert xray_cache.load("merge")["last_reading_pct"] == 73
+
+    def test_merge_requires_existing_cache(self, tmp_cache):
+        with pytest.raises(FileNotFoundError):
+            xray_cache.merge_translation_index("missing", {"version": 1})
+
+    def test_index_update_failure_rolls_back_record_and_index(self, tmp_cache, monkeypatch):
+        record = _make_record(book_hash="rollback")
+        xray_cache.save("rollback", record)
+        old_record = xray_cache.load("rollback")
+        old_index = xray_cache.load_index()
+
+        monkeypatch.setattr(xray_cache, "_update_index", lambda *_args: (_ for _ in ()).throw(OSError("index failed")))
+
+        with pytest.raises(OSError, match="index failed"):
+            xray_cache.merge_translation_index("rollback", {"version": 1})
+        assert xray_cache.load("rollback") == old_record
+        assert xray_cache.load_index() == old_index
+
+
+class TestEditionPreference:
+
+    def test_real_epub_record_precedes_knowledge_record(self, tmp_cache):
+        knowledge = _make_record(title="Lolita", author="Vladimir Nabokov", book_hash="knowledge")
+        knowledge["strategy"] = "knowledge_only"
+        real = _make_record(title="Lolita", author="Vladimir Nabokov", book_hash="real")
+        xray_cache.save("knowledge", knowledge)
+        xray_cache.save("real", real)
+
+        assert xray_cache.find_by_title_author("Lolita", "Vladimir Nabokov")["book"]["epub_hash"] == "real"
+        assert len(xray_cache.find_all_by_title_author("Lolita", "Vladimir Nabokov")) == 2
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # load_index edge cases
 # ═══════════════════════════════════════════════════════════════════════════════

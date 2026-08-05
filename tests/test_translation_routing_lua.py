@@ -44,24 +44,12 @@ def entry(source: str, translation: str = "English") -> tuple[str, dict]:
     }
 
 
-def document(epub: Path, entries: list[tuple[str, dict]] | None = None) -> dict:
-    return {
-        "version": 1,
-        "source_epub": {
-            "filename": epub.name,
-            "size_bytes": epub.stat().st_size,
-            "sha256": "a" * 64,
-        },
-        "target_language": "English",
-        "generated_at": "2026-08-04T00:00:00Z",
-        "translations": dict(entries or [entry("Bonjour le monde", "Hello world")]),
-    }
-
-
 def run_main_lua(body: str, *args: str) -> subprocess.CompletedProcess[str]:
     assert LUA is not None, "host Lua is required"
     bootstrap = f"""
 package.path = {lua_literal(str(PLUGIN_DIR))} .. "/?.lua;" .. package.path
+package.preload["libs/libkoreader-lfs"] = function() return {{ attributes = function() return nil end }} end
+package.preload["ffi/sha2"] = function() return {{ sha256 = function() return function() return string.rep("0", 64) end end }} end
 local shown = {{}}
 local function widget(kind)
     return {{ new = function(_, props) props.kind = kind; return props end }}
@@ -115,30 +103,42 @@ end
         input=bootstrap + "\n" + body,
         text=True,
         capture_output=True,
+        timeout=30,
     )
     if result.returncode:
         pytest.fail(f"Lua failed ({result.returncode}):\n{result.stderr}\n{result.stdout}")
     return result
 
 
-def write_fixture(epub: Path, raw: str = "fixture-json") -> Path:
-    epub.write_bytes(b"real epub bytes")
-    adjacent = epub.with_suffix(".marginalia-translations.json")
-    adjacent.write_text(raw, encoding="utf-8")
-    return adjacent
-
-
-def test_translate_mode_callback_uses_real_sidecar_and_shows_viewer(tmp_path):
-    epub = tmp_path / "Novel.epub"
-    write_fixture(epub)
-    doc = document(epub, [entry("Bonjour le monde", "Hello world")])
+def test_translate_mode_uses_in_memory_book_index_without_epub_sidecar():
+    index = {
+        "version": 1,
+        "target_language": "English",
+        "translations": dict([entry("Bonjour le monde", "Hello world")]),
+    }
     run_main_lua(
         f"""
-package.preload["rapidjson"] = function()
-    return {{ decode = function(raw) assert(raw == "fixture-json"); return {lua_literal(doc)} end }}
-end
 local PiRead = require("main")
-local plugin = {{ ui = {{ document = {{ file = arg[1] }} }} }}
+local plugin = {{ _translation_index = {lua_literal(index)}, ui = {{ document = {{ file = "/books/Novel.epub" }} }} }}
+setmetatable(plugin, {{ __index = PiRead }})
+plugin.askBridge = function() error("askBridge forbidden for Translate") end
+plugin:handleModeSelection("Bonjour le monde", "", "", "Novel", "Author", "translate", "Translate to English", nil)
+assert(#shown == 1 and shown[1].kind == "TextViewer")
+assert(shown[1].text == "Hello world")
+"""
+    )
+
+
+def test_translate_mode_callback_uses_cached_index_and_shows_viewer():
+    index = {
+        "version": 1,
+        "target_language": "English",
+        "translations": dict([entry("Bonjour le monde", "Hello world")]),
+    }
+    run_main_lua(
+        f"""
+local PiRead = require("main")
+local plugin = {{ _translation_index = {lua_literal(index)}, ui = {{ document = {{ file = "/books/Novel.epub" }} }} }}
 setmetatable(plugin, {{ __index = PiRead }})
 plugin.askBridge = function() error("askBridge forbidden for Translate") end
 plugin.showLoadingAnim = function() error("loading forbidden for Translate") end
@@ -152,54 +152,28 @@ assert(shown[2].kind == "TextViewer")
 assert(shown[2].title == "Translate to English")
 assert(shown[2].text == "Hello world")
 assert(shown[2].width == 920 and shown[2].height == 624)
-""",
-        str(epub),
+"""
     )
 
 
 @pytest.mark.parametrize(
-    ("case", "path_kind", "sidecar_raw", "doc_mutation"),
+    "index",
     [
-        ("missing", "epub", None, ""),
-        ("malformed", "epub", "bad-json", "decode_error"),
-        ("stale", "epub", "fixture-json", "stale"),
-        ("ambiguous", "epub", "fixture-json", "ambiguous"),
-        ("missing-path", "missing", None, ""),
-        ("non-epub", "text", None, ""),
+        None,
+        {"version": 1, "target_language": "English", "translations": {}},
+        {"version": 1, "target_language": "English", "translations": "invalid"},
+        {
+            "version": 1,
+            "target_language": "English",
+            "translations": dict([entry("selected words"), entry("more selected text")]),
+        },
     ],
 )
-def test_translate_misses_are_identical_and_never_fall_through(
-    tmp_path, case, path_kind, sidecar_raw, doc_mutation
-):
-    epub = tmp_path / "Novel.epub"
-    epub.write_bytes(b"real epub bytes")
-    if sidecar_raw is not None:
-        epub.with_suffix(".marginalia-translations.json").write_text(sidecar_raw, encoding="utf-8")
-    doc = document(epub)
-    if doc_mutation == "stale":
-        doc["source_epub"]["size_bytes"] += 1
-    elif doc_mutation == "ambiguous":
-        doc["translations"] = dict(
-            [entry("selected words"), entry("more selected text")]
-        )
-    if path_kind == "missing":
-        lua_path = "nil"
-    elif path_kind == "text":
-        lua_path = lua_literal(str(tmp_path / "Novel.txt"))
-    else:
-        lua_path = "arg[1]"
-    decoder = (
-        'error("decoder failed")'
-        if doc_mutation == "decode_error"
-        else f"return {lua_literal(doc)}"
-    )
+def test_translate_cache_misses_are_identical_and_never_fall_through(index):
     run_main_lua(
         f"""
-package.preload["rapidjson"] = function()
-    return {{ decode = function(_) {decoder} end }}
-end
 local PiRead = require("main")
-local plugin = {{ ui = {{ document = {{ file = {lua_path} }} }} }}
+local plugin = {{ _translation_index = {lua_literal(index)}, ui = {{ document = {{ file = "/books/Novel.epub" }} }} }}
 setmetatable(plugin, {{ __index = PiRead }})
 plugin.askBridge = function() error("askBridge forbidden for Translate") end
 plugin.showLoadingAnim = function() error("loading forbidden for Translate") end
@@ -208,8 +182,7 @@ plugin:handleModeSelection("selected", "before", "after", "Novel", "Author", "tr
 assert(#shown == 1)
 assert(shown[1].kind == "InfoMessage")
 assert(shown[1].text == {lua_literal(MISS_TEXT)})
-""",
-        str(epub),
+"""
     )
 
 
@@ -266,8 +239,57 @@ def test_translate_branch_is_local_and_other_modes_keep_async_bridge():
     translate_part, bridge_part = branch.split("if mode_id == \"translate\"", 1)[1].split("return", 1)
     forbidden = ["askBridge", "Bridge:", "askAsync", "showLoadingAnim", "captureLookup", "Queue", "NetworkMgr"]
     assert all(token not in translate_part for token in forbidden)
-    assert "TranslationSidecar.lookup" in translate_part
+    assert "TranslationSidecar.lookupDocument" in translate_part
+    assert "TranslationSidecar.lookup," not in translate_part
+    assert "self._translation_index" in translate_part
     assert "self:askBridge" in bridge_part
     ask_start = source.index("function PiRead:askBridge")
     ask_end = source.index("\nend", ask_start)
     assert "Bridge:askAsync" in source[ask_start:ask_end]
+
+
+def test_translation_index_is_loaded_and_persisted_with_book_cache():
+    source = (PLUGIN_DIR / "main.lua").read_text(encoding="utf-8")
+    doc_load = source[source.index("function PiRead:onDocLoad"):source.index("function PiRead:checkXRayFreshness")]
+    store = source[source.index("function PiRead:_storeXRay"):source.index("function PiRead:_xrayContext")]
+    freshness = source[source.index("function PiRead:checkXRayFreshness"):source.index("function PiRead:currentReadingPct")]
+
+    assert "self:_validatedTranslationIndex(record.translation_index)" in doc_load
+    assert "self:_validatedTranslationIndex(resp.translation_index)" in store
+    assert "translation_index = resp.translation_index" in store
+    assert "self:_validatedTranslationIndex(resp.translation_index)" in freshness
+    assert "translation_index = resp.translation_index" in freshness
+    validator = source[source.index("function PiRead:_validatedTranslationIndex"):source.index("function PiRead:onDocLoad")]
+    assert "TranslationSidecar.validate" in validator
+    assert 'match("%.epub$")' in validator
+    assert "self.ui.document.file" in validator
+    assert "actual_partial_md5 = self._device_partial_md5" in validator
+    assert 'resp.status == "needs_epub"' in freshness
+    assert "self:requestXRay(title, author, self:currentReadingPct())" in freshness
+    assert "device_partial_md5  = self._device_partial_md5" in freshness
+    request = source[source.index("function PiRead:requestXRay"):source.index("function PiRead:schedulePoll")]
+    assert "device_partial_md5 = self._device_partial_md5" in request
+
+
+def test_document_load_clears_previous_translation_state():
+    source = (PLUGIN_DIR / "main.lua").read_text(encoding="utf-8")
+    doc_load = source[source.index("function PiRead:onDocLoad"):source.index("function PiRead:checkXRayFreshness")]
+    reset_index = doc_load.index("self._translation_index = nil")
+    reset_hash = doc_load.index("self._device_partial_md5 = nil")
+    cache_lookup = doc_load.index("Cache.findByTitle")
+    assert reset_index < cache_lookup
+    assert reset_hash < cache_lookup
+
+
+def test_poll_rejects_job_started_for_previous_document():
+    source = (PLUGIN_DIR / "main.lua").read_text(encoding="utf-8")
+    poll = source[source.index("function PiRead:pollXRayStatus"):source.index("function PiRead:_storeXRay")]
+    store = source[source.index("function PiRead:_storeXRay"):source.index("function PiRead:_xrayContext")]
+    doc_load = source[source.index("function PiRead:onDocLoad"):source.index("function PiRead:checkXRayFreshness")]
+
+    assert "self._xray_job_generation ~= self._document_generation" in poll
+    assert "self:_storeXRay(resp, generation)" in poll
+    assert "generation ~= self._document_generation" in store
+    assert "self._xray_job_id = nil" in doc_load
+    assert "UIManager:unschedule(self._poll_handle)" in doc_load
+    assert "if generation ~= self._document_generation then return end" in doc_load

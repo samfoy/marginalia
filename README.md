@@ -117,17 +117,13 @@ adb push marginalia.koplugin /sdcard/koreader/plugins/marginalia.koplugin
 
 Restart KOReader after copying.
 
-### Prepare offline translations
+### Offline translations
 
-Translation sidecars are generated explicitly on the bridge/desktop with the configured LLM; opening, reading, or downloading a book never generates one:
+Foreign-language passages are precomputed once while the bridge builds the Book Index. The translation index is delivered in the existing Book Index response and stored in KOReader's per-book Marginalia cache. No BookOrbit feature, EPUB modification, adjacent file, or separate device transfer is required.
 
-```bash
-marginalia translations "/path/to/Book.epub" [--batch-size N]
-```
+**Translate to English is strictly local at reading time.** A cached hit displays immediately and is not auto-captured as an AI lookup. A missing or ambiguous entry displays exactly **No precomputed translation found for this selection.** There is no bridge or network fallback from the Translate action. Other Ask AI modes still use the bridge and retain their existing capture behavior.
 
-The command generates or refreshes a versioned English sidecar beside the EPUB, replacing only its final extension: `Book.epub` becomes `Book.marginalia-translations.json`. Transfer both files to the device under the same directory and paired basename. For example, a BookOrbit or other transfer workflow must deliver both `Lolita.epub` and `Lolita.marginalia-translations.json`; BookOrbit does not automatically generate or transfer the sidecar.
-
-**Translate to English is strictly local and offline.** A sidecar hit displays immediately and is not auto-captured as an AI lookup. A missing, malformed, stale, colliding, ambiguous, or otherwise unavailable sidecar displays exactly **No precomputed translation found for this selection.** There is no bridge or network fallback. Other Ask AI modes still use the bridge and retain their existing capture behavior.
+Legacy Book Index caches are backfilled automatically the next time the plugin checks the bridge while online. The resulting index persists on the device for later offline reading. For manual export or inspection, `marginalia translations "/path/to/Book.epub"` can still write the same versioned index as adjacent JSON, but KOReader does not require that file.
 
 ### Configure
 
