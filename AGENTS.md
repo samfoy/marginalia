@@ -1,6 +1,6 @@
 # marginalia — Project Agent Instructions
 
-This is the **marginalia** project: a Python bridge + KOReader Lua plugin for AI-powered reading assistance. Repo is at `~/Projects/piread/` (remote: `github.com/samfoy/marginalia`).
+This is the **marginalia** project: a Python bridge + KOReader Lua plugin for AI-powered reading assistance. Repo is at `~/workspace/marginalia/` (remote: `github.com/samfoy/marginalia`).
 
 Before starting any work, read `HANDOVER.md` for full context.
 
@@ -48,6 +48,11 @@ After pushing the plugin, KOReader needs a restart. Use **clean exit** (top menu
 
 ## Testing
 
+Run the automated suite first — it is the gate for any change (225 tests as of 0.10.0):
+```bash
+python3 -m pytest tests/ -q
+```
+
 Run bridge API tests after any change to `bridge/`:
 ```bash
 cd bridge && python3 -c "
@@ -76,6 +81,8 @@ rm -f /tmp/x.out
 - **`noteAsync` is blocking (intentional):** the bridge.lua `noteAsync` uses a synchronous HTTP call. This is deliberate — async forks cross-talk with concurrent `/book-index/init` subprocesses via inherited FDs. Don't change it back to async.
 - **Queue writes:** always use `Queue.enqueue()`. The `write()` function rebuilds a fresh Lua array before encoding to avoid rapidjson's object-flagged-table bug (decoded `{}` re-encodes as `{}` not `[]`).
 - **Commits:** conventional commits (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`).
+- **Version bumps touch three files:** `marginalia.koplugin/_meta.lua`, `pyproject.toml`, and the version assertion in `tests/test_plugin_package.py`. The App Store compares `_meta.lua`, so a release with these out of sync ships misleading version info.
+- **Translate to English never calls the network.** It reads only the cached `translation_index`. A miss must report `No precomputed translation found for this selection.` — do not add a bridge fallback.
 
 ## Critical gotchas
 
