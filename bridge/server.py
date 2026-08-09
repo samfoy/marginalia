@@ -527,9 +527,10 @@ def _publish_upload(data: bytes, job_id: str) -> tuple[str, str]:
 def _cleanup_upload(epub_path: str, job_id: str) -> None:
     """Release a job's claim and delete the upload if it was the last user.
 
-    The decision and the unlink happen under one lock, so a job that
-    concurrently republishes the same content-addressed path cannot have its
-    freshly claimed file deleted by this (now stale) cleanup.
+    The decision and the unlink happen under one lock, so a republish of the same
+    path (a job retrying) cannot have its freshly claimed file deleted by an
+    earlier, now-stale cleanup. Paths are per-job, so in practice the "last user"
+    is the owning job — the refcount keeps this correct and idempotent anyway.
     """
     with _uploads_lock:
         users = _upload_users.get(epub_path)
