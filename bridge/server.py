@@ -1646,11 +1646,10 @@ class Handler(BaseHTTPRequestHandler):
         data = self.rfile.read(length)
 
         job_id = _new_job_id()
-        # Publish + claim atomically: writing the shared content-addressed path
-        # first and claiming afterwards left a window where a finishing job
-        # could unlink it, handing this job a missing EPUB.
+        # Publish + claim under one lock. The digest is discarded here because it
+        # is already in epub_path (and therefore in the log line below).
         try:
-            epub_path, _epub_hash = _publish_upload(data, job_id)
+            epub_path, _ = _publish_upload(data, job_id)
         except Exception:
             # Disk full, permissions, an unavailable hash primitive, etc. Don't
             # leave a job stuck "pending" forever — drop it and answer honestly.
