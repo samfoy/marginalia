@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "marginalia"
-version = "0.10.4"
+version = "0.10.5"
 description = "AI reading companion: Book Index, RAG, highlights, and Obsidian notes for KOReader"
 readme = "README.md"
 requires-python = ">=3.11"

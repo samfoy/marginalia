@@ -50,11 +50,12 @@ def _job(job_id: str) -> None:
 
 def test_second_job_still_sees_epub_after_first_finishes(tmp_path, monkeypatch,
                                                         minimal_epub_bytes, tmp_cache):
-    """The EPUB must survive until the LAST concurrent job is done.
+    """A finishing job must never remove the EPUB another job is working on.
 
-    This is the exact Blood Meridian failure: two jobs share one upload path,
-    the first finishes and unlinks, and the second can no longer read the file
-    it was given.
+    This is the exact Blood Meridian failure. Originally both jobs shared one
+    content-addressed file and the first to finish unlinked it. Uploads are now
+    per-job, so isolation is structural — assert the OUTCOME (each job keeps a
+    readable EPUB for its whole run) rather than the old shared-path mechanism.
     """
     monkeypatch.setattr(srv, "UPLOADS_DIR", tmp_path / "uploads")
 
@@ -62,26 +63,28 @@ def test_second_job_still_sees_epub_after_first_finishes(tmp_path, monkeypatch,
     _job(first)
     _job(second)
 
-    # Both uploads carry identical bytes, so both resolve to the same path —
-    # exactly what the plugin's retry loop produces.
+    # Identical bytes — exactly what the plugin's retry loop produces.
     path, _ = srv._publish_upload(minimal_epub_bytes, first)
     path2, _ = srv._publish_upload(minimal_epub_bytes, second)
-    assert path == path2, "identical bytes must share one content-addressed path"
+    assert path != path2, "jobs must not share one upload file"
 
     monkeypatch.setattr(srv, "extract_epub", lambda p: (_ for _ in ()).throw(
         RuntimeError("stop early — file existence is what matters here")))
 
-    # First job runs to completion (and would previously unlink).
+    # First job runs to completion (this is what used to nuke the shared file).
     srv._run_xray_job_from_epub(first, path, "Blood Meridian", "Cormac McCarthy", 0)
 
-    assert os.path.isfile(path), (
-        "first job deleted the shared upload while a second job was still using it"
+    assert os.path.isfile(path2), (
+        "first job's teardown removed the EPUB the second job was still using"
     )
+    assert open(path2, "rb").read() == minimal_epub_bytes, "second job's bytes changed"
 
-    srv._run_xray_job_from_epub(second, path, "Blood Meridian", "Cormac McCarthy", 0)
+    srv._run_xray_job_from_epub(second, path2, "Blood Meridian", "Cormac McCarthy", 0)
 
-    # Once the last user is done the file is cleaned up — no disk leak.
-    assert not os.path.isfile(path), "upload leaked after the last job finished"
+    # Both jobs cleaned up after themselves — no disk leak.
+    assert not os.path.isfile(path)
+    assert not os.path.isfile(path2)
+    assert list((tmp_path / "uploads").iterdir()) == [], "uploads leaked"
 
 
 def test_single_job_still_cleans_up(tmp_path, monkeypatch, minimal_epub_bytes, tmp_cache):

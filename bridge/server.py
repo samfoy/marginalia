@@ -440,23 +440,27 @@ _xray_jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 
-# Uploaded EPUBs live at a CONTENT-ADDRESSED path ({md5}.epub), so every repeat
-# upload of one book — and the plugin retries on its own — resolves to the same
-# file. Each job used to unlink that path unconditionally in its finally block,
-# which deleted the EPUB out from under the jobs still running: their
+# Uploaded EPUBs used to live at a CONTENT-ADDRESSED path ({md5}.epub), so every
+# repeat upload of one book — and the plugin retries on its own — resolved to the
+# same file. Each job then unlinked that path unconditionally in its finally
+# block, deleting the EPUB out from under the jobs still running: their
 # translation build died with FileNotFoundError, the record was cached with a
 # null translation_index, init answered needs_epub, and the device re-uploaded
 # until it gave up with "Book Index upload failed" (Blood Meridian, 2026-08-09).
 #
-# The upload path is shared state, so it is refcounted: only the last job using
-# a path deletes it. Publication and claiming happen under one lock so a job can
-# never be handed a path a finishing job is about to unlink, and the bytes are
-# always written to a temp file then os.replace()d in, so a concurrent upload
-# swaps the directory entry instead of truncating a file an in-flight job is
-# still reading (readers keep their open fd on the old inode).
+# Uploads are now PER JOB ({sha256}-{job_id}.epub): a job owns its file outright,
+# so no other job can delete or overwrite the bytes it is working on. That also
+# closes a content-integrity hole a shared path had — a job opens its upload
+# twice (extract_epub, then the translation build), so a colliding upload landing
+# between those reads could feed it a different book. SHA-256 replaces MD5 so the
+# name isn't attacker-steerable either, but correctness no longer depends on the
+# digest being collision-free.
+#
+# The refcount is kept: it makes cleanup idempotent and safe if a path is ever
+# shared again, and lets a bypassed registration still be cleaned up.
 _upload_users: dict[str, set[str]] = {}
-# Paths whose final release already happened, so a repeat cleanup can't unlink
-# twice. Bounded LRU: this server is long-lived and every distinct upload would
+# Paths whose teardown already completed, so a repeat cleanup can't unlink twice.
+# Bounded LRU: this server is long-lived and every distinct upload would
 # otherwise add an entry forever.
 _upload_done: collections.OrderedDict[str, None] = collections.OrderedDict()
 _UPLOAD_DONE_MAX = 512
@@ -472,15 +476,16 @@ def _note_upload_done(epub_path: str) -> None:
 
 
 def _publish_upload(data: bytes, job_id: str) -> tuple[str, str]:
-    """Write an uploaded EPUB and claim it atomically.
+    """Write an uploaded EPUB to a path this job owns, and claim it.
 
-    Returns (path, epub_hash). Claiming inside the same lock that publishes the
-    file closes the window where a finishing job could unlink the path between
-    the write and the claim. Any failure rolls the claim back so a failed upload
-    can't pin a path forever.
+    Returns (path, sha256). The filename includes job_id, so two jobs uploading
+    identical bytes get separate files and can never disturb each other's reads
+    or teardown. The bytes are written to a temp file and os.replace()d into
+    place, so even a re-publish by the same job swaps the directory entry
+    instead of truncating a file it may already be reading.
     """
-    epub_hash = hashlib.md5(data).hexdigest()
-    epub_path = str(UPLOADS_DIR / f"{epub_hash}.epub")
+    epub_hash = hashlib.sha256(data).hexdigest()
+    epub_path = str(UPLOADS_DIR / f"{epub_hash}-{job_id}.epub")
 
     # Write OUTSIDE the lock: this can be up to 100 MB plus an fsync, and
     # blocking every other upload/cleanup for that long is needless.
@@ -494,13 +499,10 @@ def _publish_upload(data: bytes, job_id: str) -> tuple[str, str]:
             os.fsync(tmp.fileno())
 
         with _uploads_lock:
-            # Claim first: from here on no cleanup may remove this path.
+            # Claim before publishing so no cleanup can race the rename.
             _upload_users.setdefault(epub_path, set()).add(job_id)
             _upload_done.pop(epub_path, None)
             try:
-                # Atomic swap of the directory entry. Never write the destination
-                # in place: an in-flight job may be reading it right now, and
-                # readers keep their fd on the old inode across a rename.
                 os.replace(tmp_path, epub_path)
                 published = True
             except BaseException:
@@ -570,6 +572,26 @@ def _mark_translation_build_complete(index: dict) -> dict:
     return index
 
 
+def _new_job_id(initial: dict | None = None) -> str:
+    """Allocate a job id that is unique among live jobs, and register it.
+
+    job_id is both the `_xray_jobs` key AND part of the per-job upload filename,
+    so a duplicate would cross-wire two jobs' status *and* let one job's cleanup
+    delete the other's EPUB. `uuid4()[:8]` is only 32 bits, so don't assume
+    uniqueness — claim the id under the lock and retry on the (rare) clash.
+    """
+    with _jobs_lock:
+        while True:
+            job_id = str(uuid.uuid4())[:8]
+            if job_id in _xray_jobs:
+                continue          # already live — draw again
+            _xray_jobs[job_id] = dict(initial) if initial else {
+                "status": "pending", "progress": "Starting",
+                "record": None, "error": None,
+            }
+            return job_id
+
+
 def _claim_translation_job(book_hash: str) -> tuple[str, bool]:
     """Atomically reuse or reserve one translation backfill job per book."""
     with _jobs_lock:
@@ -578,7 +600,12 @@ def _claim_translation_job(book_hash: str) -> tuple[str, bool]:
                     and job.get("book_hash") == book_hash
                     and job.get("status") not in ("ready", "failed")):
                 return job_id, False
-        job_id = str(uuid.uuid4())[:8]
+        # Already inside _jobs_lock, so allocate inline rather than calling
+        # _new_job_id() (which takes the same non-reentrant lock).
+        while True:
+            job_id = str(uuid.uuid4())[:8]
+            if job_id not in _xray_jobs:
+                break
         _xray_jobs[job_id] = {
             "kind": "translations",
             "book_hash": book_hash,
@@ -1454,10 +1481,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
         # Calibre has it — spawn normal background job
-        job_id = str(uuid.uuid4())[:8]
-        with _jobs_lock:
-            _xray_jobs[job_id] = {"status": "pending", "progress": "Starting",
-                                   "record": None, "error": None}
+        job_id = _new_job_id()
         t = threading.Thread(
             target=_run_xray_job,
             args=(job_id, title, author, reading_pct),
@@ -1621,10 +1645,7 @@ class Handler(BaseHTTPRequestHandler):
 
         data = self.rfile.read(length)
 
-        job_id = str(uuid.uuid4())[:8]
-        with _jobs_lock:
-            _xray_jobs[job_id] = {"status": "pending", "progress": "Starting",
-                                   "record": None, "error": None}
+        job_id = _new_job_id()
         # Publish + claim atomically: writing the shared content-addressed path
         # first and claiming afterwards left a window where a finishing job
         # could unlink it, handing this job a missing EPUB.

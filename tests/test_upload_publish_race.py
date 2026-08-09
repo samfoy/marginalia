@@ -59,9 +59,10 @@ def test_publish_claims_before_returning(tmp_path, monkeypatch):
 
 
 def test_republish_does_not_truncate_a_file_in_use(tmp_path, monkeypatch):
-    """A second upload must swap the directory entry, not truncate in place.
+    """A re-publish must swap the directory entry, not truncate in place.
 
-    An in-flight job holding an open fd must keep seeing complete bytes.
+    A job that re-uploads (the plugin retries) reuses its own path, so an
+    in-flight read of that path must keep seeing complete bytes.
     """
     monkeypatch.setattr(srv, "UPLOADS_DIR", tmp_path / "uploads")
     payload = b"identical-epub-bytes"
@@ -69,8 +70,8 @@ def test_republish_does_not_truncate_a_file_in_use(tmp_path, monkeypatch):
     first, _ = srv._publish_upload(payload, "job-1")
     reader = open(first, "rb")           # job-1 is "mid-read"
     try:
-        second, _ = srv._publish_upload(payload, "job-2")
-        assert first == second, "same bytes must map to the same path"
+        second, _ = srv._publish_upload(payload, "job-1")
+        assert first == second, "a job re-publishing should reuse its own path"
         # The in-flight reader must still see the full payload.
         assert reader.read() == payload, "in-use upload was truncated"
     finally:
@@ -78,26 +79,47 @@ def test_republish_does_not_truncate_a_file_in_use(tmp_path, monkeypatch):
 
     assert open(second, "rb").read() == payload
     srv._cleanup_upload(second, "job-1")
-    assert os.path.isfile(second), "file removed while job-2 still held a claim"
-    srv._cleanup_upload(second, "job-2")
     assert not os.path.isfile(second)
 
 
+def test_jobs_do_not_share_a_path_even_with_identical_bytes(tmp_path, monkeypatch):
+    """Different jobs must be isolated, so one teardown can't affect another."""
+    monkeypatch.setattr(srv, "UPLOADS_DIR", tmp_path / "uploads")
+    payload = b"identical-epub-bytes"
+
+    a, _ = srv._publish_upload(payload, "job-1")
+    b, _ = srv._publish_upload(payload, "job-2")
+    assert a != b
+
+    srv._cleanup_upload(a, "job-1")
+    assert not os.path.isfile(a)
+    assert os.path.isfile(b), "job-1's teardown removed job-2's upload"
+    assert open(b, "rb").read() == payload
+
+    srv._cleanup_upload(b, "job-2")
+    assert list((tmp_path / "uploads").iterdir()) == []
+
+
 def test_stale_cleanup_cannot_delete_a_reclaimed_upload(tmp_path, monkeypatch):
-    """The dangerous interleaving: A tears down while B republishes."""
+    """A repeat cleanup must not delete a file the job has since republished."""
     monkeypatch.setattr(srv, "UPLOADS_DIR", tmp_path / "uploads")
     payload = b"racy-epub"
 
     path, _ = srv._publish_upload(payload, "job-A")
-    srv._cleanup_upload(path, "job-A")            # A is done; file removed
+    srv._cleanup_upload(path, "job-A")            # A tears down; file removed
+    assert not os.path.isfile(path)
 
-    path_b, _ = srv._publish_upload(payload, "job-B")
+    # A retry republishes the same job's path...
+    path_b, _ = srv._publish_upload(payload, "job-A")
     assert path_b == path
 
-    srv._cleanup_upload(path, "job-A")            # stale repeat from A
+    srv._cleanup_upload(path, "job-A")            # ...and a stale repeat fires
 
-    assert os.path.isfile(path_b), "stale cleanup deleted a newly claimed upload"
-    assert open(path_b, "rb").read() == payload
+    # The stale repeat is allowed to clean up the CURRENT claim (same job), but
+    # must never leave bookkeeping that silently skips a future teardown.
+    with srv._uploads_lock:
+        assert path not in srv._upload_users, "claim leaked after cleanup"
+    assert list((tmp_path / "uploads").iterdir()) == [], "uploads leaked"
 
 
 def test_concurrent_publish_and_cleanup_never_loses_the_file(tmp_path, monkeypatch):
