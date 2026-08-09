@@ -41,6 +41,7 @@ Config via environment variables (all optional):
   MARGINALIA_ANTHROPIC_API_KEY Anthropic API key for direct Anthropic    (default: "")
 """
 
+import collections
 import hashlib
 import io
 import json
@@ -439,6 +440,136 @@ _xray_jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 
+# Uploaded EPUBs live at a CONTENT-ADDRESSED path ({md5}.epub), so every repeat
+# upload of one book — and the plugin retries on its own — resolves to the same
+# file. Each job used to unlink that path unconditionally in its finally block,
+# which deleted the EPUB out from under the jobs still running: their
+# translation build died with FileNotFoundError, the record was cached with a
+# null translation_index, init answered needs_epub, and the device re-uploaded
+# until it gave up with "Book Index upload failed" (Blood Meridian, 2026-08-09).
+#
+# The upload path is shared state, so it is refcounted: only the last job using
+# a path deletes it. Publication and claiming happen under one lock so a job can
+# never be handed a path a finishing job is about to unlink, and the bytes are
+# always written to a temp file then os.replace()d in, so a concurrent upload
+# swaps the directory entry instead of truncating a file an in-flight job is
+# still reading (readers keep their open fd on the old inode).
+_upload_users: dict[str, set[str]] = {}
+# Paths whose final release already happened, so a repeat cleanup can't unlink
+# twice. Bounded LRU: this server is long-lived and every distinct upload would
+# otherwise add an entry forever.
+_upload_done: collections.OrderedDict[str, None] = collections.OrderedDict()
+_UPLOAD_DONE_MAX = 512
+_uploads_lock = threading.Lock()
+
+
+def _note_upload_done(epub_path: str) -> None:
+    """Record a completed teardown, evicting the oldest entries past the cap."""
+    _upload_done[epub_path] = None
+    _upload_done.move_to_end(epub_path)
+    while len(_upload_done) > _UPLOAD_DONE_MAX:
+        _upload_done.popitem(last=False)
+
+
+def _publish_upload(data: bytes, job_id: str) -> tuple[str, str]:
+    """Write an uploaded EPUB and claim it atomically.
+
+    Returns (path, epub_hash). Claiming inside the same lock that publishes the
+    file closes the window where a finishing job could unlink the path between
+    the write and the claim. Any failure rolls the claim back so a failed upload
+    can't pin a path forever.
+    """
+    epub_hash = hashlib.md5(data).hexdigest()
+    epub_path = str(UPLOADS_DIR / f"{epub_hash}.epub")
+
+    # Write OUTSIDE the lock: this can be up to 100 MB plus an fsync, and
+    # blocking every other upload/cleanup for that long is needless.
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(UPLOADS_DIR), suffix=".part")
+    published = False
+    try:
+        with os.fdopen(tmp_fd, "wb") as tmp:
+            tmp.write(data)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+
+        with _uploads_lock:
+            # Claim first: from here on no cleanup may remove this path.
+            _upload_users.setdefault(epub_path, set()).add(job_id)
+            _upload_done.pop(epub_path, None)
+            try:
+                # Atomic swap of the directory entry. Never write the destination
+                # in place: an in-flight job may be reading it right now, and
+                # readers keep their fd on the old inode across a rename.
+                os.replace(tmp_path, epub_path)
+                published = True
+            except BaseException:
+                users = _upload_users.get(epub_path)
+                if users is not None:
+                    users.discard(job_id)
+                    if not users:
+                        del _upload_users[epub_path]
+                raise
+    finally:
+        # Covers every failure path including KeyboardInterrupt/SystemExit while
+        # acquiring the lock. Once replace() succeeds the temp name is gone, so
+        # only an unpublished temp file is removed here.
+        if not published:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    return epub_path, epub_hash
+
+
+def _cleanup_upload(epub_path: str, job_id: str) -> None:
+    """Release a job's claim and delete the upload if it was the last user.
+
+    The decision and the unlink happen under one lock, so a job that
+    concurrently republishes the same content-addressed path cannot have its
+    freshly claimed file deleted by this (now stale) cleanup.
+    """
+    with _uploads_lock:
+        users = _upload_users.get(epub_path)
+        if users is not None:
+            users.discard(job_id)
+            if users:
+                return          # someone else is still using it
+            del _upload_users[epub_path]
+        elif epub_path in _upload_done:
+            return              # already torn down; don't unlink twice
+        try:
+            os.unlink(epub_path)
+        except FileNotFoundError:
+            pass                # already gone — normal
+        except OSError:
+            # Permission/filesystem failures must not be silent, and must NOT be
+            # recorded as a completed teardown: the file is still on disk, so a
+            # later cleanup has to be allowed to try again instead of returning
+            # early and leaking it forever.
+            logging.exception("failed to remove upload %s", epub_path)
+            return
+        _note_upload_done(epub_path)
+
+
+def _mark_translation_build_complete(index: dict) -> dict:
+    """Stamp a COMPLETE translation build so an empty result counts as finished.
+
+    A book can legitimately have nothing to translate. Without this marker an
+    empty index is indistinguishable from a failed build, so it fails
+    validation, init answers needs_epub, and the device re-uploads forever.
+
+    Only a build that verifiably skipped nothing may be stamped: the count must
+    be a real integer 0. A missing field, None, or any other malformed value is
+    NOT proof of completeness, and treating it as such would let a broken
+    dependency mark a degraded index permanently valid.
+    """
+    skipped = index.get("skipped_candidates")
+    if type(skipped) is int and skipped == 0:
+        index["build_attempted"] = True
+    return index
+
+
 def _claim_translation_job(book_hash: str) -> tuple[str, bool]:
     """Atomically reuse or reserve one translation backfill job per book."""
     with _jobs_lock:
@@ -494,11 +625,21 @@ def _translation_index_valid(index: object, device_partial_md5: str = "") -> boo
     if index.get("target_language") != "English" or not isinstance(index.get("translations"), dict):
         return False
     # An index with no entries is indistinguishable from a failed or skipped
-    # build, so it must not count as complete. Treating it as valid made the
-    # failure permanent: the bridge kept serving the empty index from cache and
-    # never retried, so the device reported no translations forever.
+    # build, so it must not count as complete on its own. Treating it as valid
+    # made the failure permanent: the bridge kept serving the empty index from
+    # cache and never retried, so the device reported no translations forever.
+    #
+    # But a book genuinely CAN have nothing to translate (Blood Meridian is
+    # English with a few Spanish phrases). Without a way to record "we ran a
+    # full build and found nothing", init answered needs_epub forever and the
+    # device re-uploaded until it surfaced "Book Index upload failed".
+    # _safe_translation_index stamps build_attempted on a COMPLETE build only,
+    # which is what separates "found nothing" from "never finished".
     if not index["translations"]:
-        return False
+        if index.get("build_attempted") is not True:
+            return False
+        if index.get("skipped_candidates"):
+            return False
     if not isinstance(index.get("generated_at"), str) or not index["generated_at"]:
         return False
     source = index.get("source_epub")
@@ -557,6 +698,10 @@ def _run_translation_index_job(job_id: str, cached: dict, epub_path: str) -> Non
                 raise ValueError("EPUB changed before translation backfill")
             translation_index = build_translation_index(snapshot_path)
             translation_index["source_epub"]["filename"] = Path(epub_path).name
+            # Same completeness marker the inline build applies — otherwise a
+            # backfill that legitimately finds zero passages is merged without
+            # it, instantly fails validation, and re-queues forever.
+            _mark_translation_build_complete(translation_index)
         finally:
             if snapshot_path:
                 try:
@@ -589,6 +734,12 @@ def _safe_translation_index(epub_path: str) -> dict | None:
     if skipped:
         logging.warning("Translation index for %s is partial: %d candidate(s) skipped",
                         epub_path, skipped)
+    else:
+        # Record that a COMPLETE build ran. This is what lets a book with
+        # nothing to translate (an English novel with a few foreign phrases)
+        # count as finished instead of looping the device through needs_epub →
+        # upload → empty index → needs_epub until it reports upload failure.
+        _mark_translation_build_complete(index)
     logging.info("Translation index built for %s: %d entr(ies), %d skipped",
                  epub_path, len(index.get("translations") or {}), skipped)
     return index
@@ -722,10 +873,10 @@ def _run_xray_job_from_epub(job_id: str, epub_path: str, title: str, author: str
         logging.exception("Book Index job %s failed (device epub)", job_id)
         update("failed", error=str(exc))
     finally:
-        try:
-            os.unlink(epub_path)
-        except OSError:
-            pass
+        # Only the last job using this shared upload may delete it, and the
+        # decision + unlink happen atomically so a concurrently republished
+        # upload isn't deleted out from under its new owner.
+        _cleanup_upload(epub_path, job_id)
 
 
 def _run_knowledge_xray_job(job_id: str, title: str, author: str) -> None:
@@ -1469,24 +1620,41 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(413, "EPUB too large (100 MB limit)"); return
 
         data = self.rfile.read(length)
-        epub_hash = hashlib.md5(data).hexdigest()
-
-        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        epub_path = str(UPLOADS_DIR / f"{epub_hash}.epub")
-        with open(epub_path, "wb") as f:
-            f.write(data)
-        logging.info("epub upload: %s bytes → %s (title=%r)", length, epub_path, title)
 
         job_id = str(uuid.uuid4())[:8]
         with _jobs_lock:
             _xray_jobs[job_id] = {"status": "pending", "progress": "Starting",
                                    "record": None, "error": None}
+        # Publish + claim atomically: writing the shared content-addressed path
+        # first and claiming afterwards left a window where a finishing job
+        # could unlink it, handing this job a missing EPUB.
+        try:
+            epub_path, _epub_hash = _publish_upload(data, job_id)
+        except Exception:
+            # Disk full, permissions, an unavailable hash primitive, etc. Don't
+            # leave a job stuck "pending" forever — drop it and answer honestly.
+            logging.exception("epub upload could not be stored (title=%r)", title)
+            with _jobs_lock:
+                _xray_jobs.pop(job_id, None)
+            self.send_error(500, "Could not store uploaded EPUB")
+            return
+        logging.info("epub upload: %s bytes → %s (title=%r)", length, epub_path, title)
+
         t = threading.Thread(
             target=_run_xray_job_from_epub,
             args=(job_id, epub_path, title, author, reading_pct),
             daemon=True,
         )
-        t.start()
+        try:
+            t.start()
+        except BaseException:
+            # Thread never ran, so its finally-block cleanup never will either.
+            logging.exception("could not start Book Index job for %r", title)
+            _cleanup_upload(epub_path, job_id)
+            with _jobs_lock:
+                _xray_jobs.pop(job_id, None)
+            self.send_error(500, "Could not start Book Index job")
+            return
         logging.info("Book Index job %s started (device epub) for %r", job_id, title)
         self._send_json(202, {"status": "generating", "job_id": job_id,
                               "poll_url": f"/book-index/status/{job_id}"})
