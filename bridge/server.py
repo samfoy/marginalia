@@ -10,6 +10,10 @@ Routes:
   POST /chat                       free Q&A grounded in reading position (RAG)
   POST /recap                      "where you left off" summary
   POST /wiki                       AI Wiki deep-dive on one entity
+  POST /translate                  live on-demand translation of a selection
+                                   (for clients with no Book Index pipeline, e.g.
+                                   the CrossPoint firmware; the KOReader plugin's
+                                   own "Translate to English" stays offline)
   POST /section                    chapter-by-chapter analysis
   POST /note                       save highlighted passage + context to Obsidian vault
   POST /note-new                    create a standalone Obsidian note from a chat response
@@ -169,6 +173,25 @@ SECTION_INSTRUCTIONS = (
     "markdown. Do not reference anything outside this section or past the reader's "
     "position."
 )
+TRANSLATE_INSTRUCTIONS = (
+    "You are a translator serving a reader on an e-ink device. Translate the given "
+    "text into the requested target language. Reply with ONLY the translation — no "
+    "preamble, no quotes around it, no notes, no romanization, no markdown. Preserve "
+    "the register and tone of the original. If the text is a single word, give the "
+    "most likely sense in this context first; you may add up to two other common "
+    "senses on separate lines, each as bare text. If the text is already in the "
+    "target language, reply with the text unchanged."
+)
+# Translate is pinned to a strong model because a bad translation is worse than a
+# slow one, and requests are small (a word or a sentence). Overridable so the
+# model can be moved without a redeploy of the plugin/firmware.
+TRANSLATE_MODEL_ID = os.environ.get("MARGINALIA_TRANSLATE_MODEL_ID",
+                                    "us.anthropic.claude-sonnet-5")
+TRANSLATE_EFFORT = os.environ.get("MARGINALIA_TRANSLATE_EFFORT", "low")
+# Hard cap on accepted selection length: the device sends a word or a highlighted
+# phrase, never a chapter. Bounds token spend and blocks abuse of the endpoint.
+TRANSLATE_MAX_CHARS = int(os.environ.get("MARGINALIA_TRANSLATE_MAX_CHARS", "600"))
+
 CHAT_INSTRUCTIONS = (
     "You are Pi, a reading companion inside KOReader. The reader asks questions "
     "about the book they are currently reading. Answer concisely (3–5 sentences) "
@@ -1109,6 +1132,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/wiki":
             self._handle_wiki()
             return
+        if self.path == "/translate":
+            self._handle_translate()
+            return
         if self.path == "/section":
             self._handle_section()
             return
@@ -1335,6 +1361,62 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             logging.exception("/wiki error")
             self._send_json(500, {"response": None, "error": str(exc)})
+
+    # ── /translate — on-demand translation of a selection ──────────────────────
+    # Distinct from the KOReader plugin's "Translate to English", which is
+    # deliberately offline (precomputed translation_index, no network fallback).
+    # This endpoint exists for clients with no Book Index pipeline — the
+    # CrossPoint firmware on the Xteink X4 Pro — which hold only the selected
+    # text and must ask for a translation live.
+    def _handle_translate(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON"); return
+
+        text = (req.get("text") or "").strip()
+        target = (req.get("target_lang") or "English").strip() or "English"
+        source = (req.get("source_lang") or "").strip()
+        title = (req.get("book_title") or "").strip()
+        author = (req.get("book_author") or "").strip()
+        context = (req.get("context") or "").strip()
+
+        if not text:
+            self._send_json(400, {"translation": None, "error": "Missing text"}); return
+        if len(text) > TRANSLATE_MAX_CHARS:
+            self._send_json(413, {
+                "translation": None,
+                "error": f"Selection too long ({len(text)} chars, max {TRANSLATE_MAX_CHARS})",
+            })
+            return
+
+        parts = []
+        if title:
+            parts.append(f'From the book "{title}"' + (f" by {author}" if author else "") + ".")
+        # Surrounding sentence disambiguates a single word ("bank", "port") without
+        # letting the model translate the context itself.
+        if context and context != text:
+            parts.append("Surrounding text, for disambiguation only — do NOT translate this:\n"
+                         + context[:TRANSLATE_MAX_CHARS])
+        parts.append(f"Source language: {source}." if source else "Detect the source language.")
+        parts.append(f"Target language: {target}.")
+        parts.append("Text to translate:\n" + text)
+
+        try:
+            from xray_generator import _complete
+            out = _complete("\n\n".join(parts), instructions=TRANSLATE_INSTRUCTIONS,
+                            reasoning_effort=TRANSLATE_EFFORT,
+                            primary=TRANSLATE_MODEL_ID).strip()
+            if not out:
+                # An empty completion is a failure, not a valid translation — never
+                # hand the device a blank pane that looks like a successful lookup.
+                self._send_json(502, {"translation": None, "error": "Empty translation"})
+                return
+            self._send_json(200, {"translation": out, "target_lang": target, "error": None})
+        except Exception as exc:
+            logging.exception("/translate error")
+            self._send_json(500, {"translation": None, "error": str(exc)})
 
     # ── /section — Section X-Ray for one chapter/part ─────────────────────────
     def _handle_section(self):

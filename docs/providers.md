@@ -191,6 +191,9 @@ export MARGINALIA_LOCAL_EMBED_MODEL=all-mpnet-base-v2  # ~420MB, higher quality
 | `MARGINALIA_AWS_REGION` | AWS region for Bedrock (default: `us-west-2`) |
 | `MARGINALIA_MAX_TOKENS` | Max tokens for companion responses (default: 600) |
 | `MARGINALIA_COMPANION_EFFORT` | Reasoning effort `none\|low\|medium\|high` (default: `low`) |
+| `MARGINALIA_TRANSLATE_MODEL_ID` | Model for `POST /translate` (default: `us.anthropic.claude-sonnet-5`) |
+| `MARGINALIA_TRANSLATE_EFFORT` | Reasoning effort for `/translate` (default: `low`) |
+| `MARGINALIA_TRANSLATE_MAX_CHARS` | Max accepted selection length for `/translate` (default: 600) |
 | `MARGINALIA_EMBED_BACKEND` | Embedding backend: `auto\|local\|openai\|bedrock` |
 | `MARGINALIA_LOCAL_EMBED_MODEL` | sentence-transformers model (default: `all-MiniLM-L6-v2`) |
 | `MARGINALIA_XRAY_MAX_TOKENS` | Max tokens for Book Index generation (default: 16384) |
